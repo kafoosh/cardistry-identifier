@@ -90,7 +90,9 @@ export class MotionTracker {
         this.smoothed[slot] = rel
         continue
       }
-      const next = rel.map((p, i) => [prev[i][0] + (p[0] - prev[i][0]) * SMOOTH, prev[i][1] + (p[1] - prev[i][1]) * SMOOTH, 0] as Point3)
+      const next = rel.map(
+        (p, i) => [prev[i][0] + (p[0] - prev[i][0]) * SMOOTH, prev[i][1] + (p[1] - prev[i][1]) * SMOOTH, 0] as Point3,
+      )
       if (dt > 0) {
         let sum = 0
         for (let i = 1; i < 21; i++) sum += Math.hypot(next[i][0] - prev[i][0], next[i][1] - prev[i][1])

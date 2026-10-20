@@ -8,8 +8,8 @@ import type { Template } from './recognizer'
 
 /**
  * Features for a take, and whether it is a one-hand or two-hand move. A
- * one-hand take is encoded from its moving hand alone (left hands are
- * mirrored), so it can match that move done in either hand.
+ * one-hand take is encoded from its moving hand alone; matching tries the
+ * mirror image too, so it can match that move done in either hand.
  */
 export function templateFeatures(frames: Frame[], aspect: number): Pick<Template, 'features' | 'hands'> | null {
   const active = detectActiveHands(frames).filter((h) => h.active && h.presence >= 0.3)
@@ -42,7 +42,11 @@ export async function loadSharedTemplates(skip: Set<string>): Promise<Template[]
   const moves = (await fetchMoves()).filter((m) => m.recordingCount > 0)
   const details = await Promise.all(moves.map((m) => fetchMove(m.slug).catch(() => null)))
   const recs = details.flatMap((d) =>
-    d ? d.recordings.filter((r) => (r.status === 'approved' || r.mine) && !skip.has(r.id)).map((r) => ({ r, name: d.move.name })) : [],
+    d
+      ? d.recordings
+          .filter((r) => (r.status === 'approved' || r.mine) && !skip.has(r.id))
+          .map((r) => ({ r, name: d.move.name }))
+      : [],
   )
   const out: Template[] = []
   // A few downloads at a time keeps phones responsive.

@@ -1,5 +1,5 @@
 import { bothHaveCards, dtw, subsequenceDtw } from './dtw'
-import type { FeatureSequence } from './features'
+import { mirrorFeatures, type FeatureSequence } from './features'
 
 export interface Template {
   id: string
@@ -49,10 +49,20 @@ function rankMoves(
   return [...best.values()].sort((a, b) => a.distance - b.distance)
 }
 
+/** Distance between two whole sequences, done with either hand. */
+export function dtwEitherHand(a: FeatureSequence, b: FeatureSequence): number {
+  return Math.min(dtw(a, b), dtw(mirrorFeatures(a), b))
+}
+
 /** Compares a whole recording against every template. */
-export function classify(query: FeatureSequence, templates: Template[], threshold: number, excludeId?: string): MoveScore[] {
+export function classify(
+  query: FeatureSequence,
+  templates: Template[],
+  threshold: number,
+  excludeId?: string,
+): MoveScore[] {
   return rankMoves(
-    templates.filter((t) => t.id !== excludeId).map((t) => ({ t, distance: dtw(query, t.features) })),
+    templates.filter((t) => t.id !== excludeId).map((t) => ({ t, distance: dtwEitherHand(query, t.features) })),
     threshold,
   )
 }
@@ -60,13 +70,15 @@ export function classify(query: FeatureSequence, templates: Template[], threshol
 /**
  * Matches templates against the end of a live window. Several encodings of
  * the same window can be passed (e.g. with each hand as the primary one);
+ * each is also tried mirrored, so the move is found in either hand, and
  * each template keeps its best.
  */
 export function matchLive(windows: FeatureSequence[], templates: Template[], threshold: number): MoveScore[] {
+  const eitherHand = windows.flatMap((w) => [w, mirrorFeatures(w)])
   return rankMoves(
     templates.map((t) => {
       let best = { t, distance: Infinity, startedAgoMs: 0, withCards: false }
-      for (const w of windows) {
+      for (const w of eitherHand) {
         const m = subsequenceDtw(w, t.features)
         if (m.distance < best.distance) {
           const msPerFrame = w.frames > 1 ? w.durationMs / (w.frames - 1) : 0
@@ -152,7 +164,7 @@ export function findOutliers(templates: Template[]): Set<string> {
     if (takes.length < MIN_TAKES_FOR_OUTLIERS) continue
     const d = takes.map(() => new Array<number>(takes.length).fill(0))
     for (let i = 0; i < takes.length; i++) {
-      for (let j = i + 1; j < takes.length; j++) d[i][j] = d[j][i] = dtw(takes[i].features, takes[j].features)
+      for (let j = i + 1; j < takes.length; j++) d[i][j] = d[j][i] = dtwEitherHand(takes[i].features, takes[j].features)
     }
     const medians = takes.map((_, i) => median(d[i].filter((_, j) => j !== i)))
     const typical = median(medians)

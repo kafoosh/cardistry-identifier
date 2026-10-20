@@ -36,7 +36,10 @@ self.onmessage = (e: MessageEvent<MatcherRequest>) => {
     const two = templates.filter((t) => t.hands === 2)
     const result: MatchResult = {
       both: msg.query.both.length && two.length ? matchLive(msg.query.both, two, msg.threshold) : [],
-      single: msg.query.single.map(({ slot, window }) => ({ slot, scores: one.length ? matchLive([window], one, msg.threshold) : [] })),
+      single: msg.query.single.map(({ slot, window }) => ({
+        slot,
+        scores: one.length ? matchLive([window], one, msg.threshold) : [],
+      })),
     }
     self.postMessage({ type: 'match', id: msg.id, match: result, ms: performance.now() - t0 })
   } else if (msg.type === 'selftest') {

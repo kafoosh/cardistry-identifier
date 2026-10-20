@@ -8,7 +8,9 @@ export class Matcher {
   private pending = new Map<number, (v: unknown) => void>()
 
   constructor() {
-    this.worker.onmessage = (e: MessageEvent<{ id: number; match?: MatchResult; ms?: number; result?: SelfTestResult; outliers?: string[] }>) => {
+    this.worker.onmessage = (
+      e: MessageEvent<{ id: number; match?: MatchResult; ms?: number; result?: SelfTestResult; outliers?: string[] }>,
+    ) => {
       const resolve = this.pending.get(e.data.id)
       this.pending.delete(e.data.id)
       resolve?.(e.data)
