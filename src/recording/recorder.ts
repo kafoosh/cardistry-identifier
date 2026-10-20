@@ -9,6 +9,8 @@ export interface Capture {
   video: Blob | null
   /** Frame time (ms) at which the video clip's time 0 falls; above 0 when frames from before the start were included. */
   videoStartMs: number
+  /** Suggested trim (ms on the frame clock), from where the hands start and stop moving. */
+  suggestedTrim?: { startMs: number; endMs: number }
 }
 
 function pickVideoMime(): string | undefined {

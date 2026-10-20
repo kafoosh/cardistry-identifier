@@ -6,7 +6,7 @@ import { SaveSheet, type SaveDetails } from './components/SaveSheet'
 import { IdentifyPanel } from './components/IdentifyPanel'
 import { SharedLibrary } from './components/SharedLibrary'
 import { Identifier, type IdentifyState } from './recognition/identifier'
-import { MOTION_ON, trimIdle } from './recognition/motion'
+import { activeSpan, MOTION_ON } from './recognition/motion'
 import { MotionWatcher } from './recognition/motionWatcher'
 import { getMatcher } from './recognition/shared'
 import { loadTemplates } from './recognition/templates'
@@ -21,6 +21,10 @@ import type { CameraFacing, Handedness } from './tracking/types'
 
 type Phase = 'idle' | 'loading' | 'live' | 'error'
 type Tab = 'live' | 'library' | 'shared'
+/** Stillness that ends an automatic take, and the shortest take auto-stop allows. */
+const AUTO_STOP_STILL_MS = 1200
+const AUTO_STOP_MIN_MS = 1000
+
 type RecState = 'ready' | 'countdown' | 'armed' | 'recording' | 'review'
 type Mode = 'record' | 'identify'
 
@@ -171,14 +175,9 @@ export default function App() {
     if (!rec) return
     recorderRef.current = null
     const raw = await rec.stop()
-    // Cut idle time before the move starts and after it ends.
-    const trimmed = trimIdle(raw.frames)
-    const cap: Capture = {
-      ...raw,
-      frames: trimmed.frames,
-      durationMs: trimmed.frames.length ? trimmed.frames[trimmed.frames.length - 1].t : 0,
-      videoStartMs: raw.videoStartMs - trimmed.cutStartMs,
-    }
+    // Suggest cutting the idle time before and after the move; the review sheet lets the user adjust it.
+    const span = activeSpan(raw.frames)
+    const cap: Capture = { ...raw, suggestedTrim: span && span.endMs - span.startMs >= 300 ? span : undefined }
     const v = videoRef.current
     if (v?.videoWidth) setVideoSize({ width: v.videoWidth, height: v.videoHeight })
     setCapture(cap)
@@ -216,21 +215,30 @@ export default function App() {
     return () => clearTimeout(id)
   }, [recState, countdown, autoStart, beginCapture])
 
-  // Auto-start: wait for intentional finger motion, then record from just before it.
+  // Auto-start: wait for fresh finger motion, then record from just before it.
+  // Motion already under way when arming (fidgeting during the countdown)
+  // has to settle first, so a take never starts half-way through something.
   useEffect(() => {
     const watcher = watcherRef.current
     if (recState !== 'armed' || !watcher) return
+    let settled = !watcher.latest.active
     return watcher.onSample((s) => {
-      if (s.active) beginCapture(watcher.recent(700))
+      if (!s.active) settled = true
+      else if (settled) beginCapture(watcher.recent(700))
     })
   }, [recState, beginCapture])
 
-  // Auto-stop: once the hands go idle after the move.
+  // Auto-stop: once the fingers have been still for a while. Short holds
+  // inside a move don't end the take, and the first second is never cut off.
   useEffect(() => {
     const watcher = watcherRef.current
     if (recState !== 'recording' || !autoStart || !watcher) return
+    let stillSince: number | null = null
     return watcher.onSample((s) => {
-      if (!s.active) void finishRecording()
+      if (s.moving) stillSince = null
+      else stillSince ??= s.t
+      const elapsed = recorderRef.current?.elapsedMs ?? 0
+      if (stillSince !== null && s.t - stillSince >= AUTO_STOP_STILL_MS && elapsed >= AUTO_STOP_MIN_MS) void finishRecording()
     })
   }, [recState, autoStart, finishRecording])
 
@@ -256,9 +264,9 @@ export default function App() {
         moveName: d.moveName,
         createdAt: Date.now(),
         frames,
-        fps: capture.durationMs > 0 ? ((frames.length - 1) * 1000) / capture.durationMs : 0,
+        fps: d.durationMs > 0 ? ((frames.length - 1) * 1000) / d.durationMs : 0,
         frameCount: frames.length,
-        durationMs: capture.durationMs,
+        durationMs: d.durationMs,
         camera: facing,
         cameraView: setup.cameraView,
         dominantHand: setup.dominantHand,
@@ -268,7 +276,7 @@ export default function App() {
         qualityScore: qualityScore(frames),
         longestGapMs: longestGapMs(frames),
         hasVideo: Boolean(d.keepVideo && capture.video),
-        videoStartMs: capture.videoStartMs,
+        videoStartMs: d.videoStartMs,
         videoMimeType: capture.video?.type,
       },
       d.keepVideo ? capture.video : null,

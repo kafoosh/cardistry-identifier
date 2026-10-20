@@ -871,3 +871,77 @@ button.link {
   color: var(--warn);
   border-color: var(--warn);
 }
+
+/* Trim: two range inputs stacked on one track; only their thumbs take input. */
+.trim {
+  margin-top: 10px;
+}
+
+.trim-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.trim-head .link {
+  margin-left: auto;
+}
+
+.trim-track {
+  position: relative;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--border);
+}
+
+.trim-kept {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  border: 2px solid var(--accent);
+  box-sizing: border-box;
+}
+
+.trim-track input[type='range'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: none;
+  pointer-events: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.trim-track input[type='range']::-webkit-slider-runnable-track {
+  background: none;
+  height: 100%;
+}
+
+.trim-track input[type='range']::-moz-range-track {
+  background: none;
+}
+
+.trim-track input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  pointer-events: auto;
+  width: 22px;
+  height: 32px;
+  border-radius: 4px;
+  background: var(--accent);
+  cursor: ew-resize;
+}
+
+.trim-track input[type='range']::-moz-range-thumb {
+  pointer-events: auto;
+  width: 22px;
+  height: 32px;
+  border: none;
+  border-radius: 4px;
+  background: var(--accent);
+  cursor: ew-resize;
+}

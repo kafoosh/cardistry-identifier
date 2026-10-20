@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { type Ref, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { drawHands } from '../tracking/draw'
 import type { Frame } from '../tracking/types'
 
@@ -11,6 +11,14 @@ interface Props {
   videoUrl?: string | null
   /** Frame time (ms) at which the video's time 0 falls. */
   videoStartMs?: number
+  /** Loop only this part (ms on the frame clock); the rest stays scrubbable. */
+  range?: { startMs: number; endMs: number }
+  /** Lets the parent pause and jump to a time (used while dragging trim handles). */
+  handle?: Ref<ReplayHandle>
+}
+
+export interface ReplayHandle {
+  seek: (ms: number) => void
 }
 
 const SPEEDS = [0.25, 0.5, 1] as const
@@ -28,7 +36,7 @@ function frameAt(frames: Frame[], time: number): number {
 }
 
 /** Replays a recording's wireframe, looping, with play/pause, scrubbing and slow motion. */
-export function ReplayCanvas({ frames, width, height, mirror, videoUrl, videoStartMs = 0 }: Props) {
+export function ReplayCanvas({ frames, width, height, mirror, videoUrl, videoStartMs = 0, range, handle }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [playing, setPlaying] = useState(true)
@@ -36,6 +44,8 @@ export function ReplayCanvas({ frames, width, height, mirror, videoUrl, videoSta
   const [time, setTime] = useState(0)
   const timeRef = useRef(0)
   const duration = frames.length ? frames[frames.length - 1].t : 0
+  const loopStart = range ? Math.max(0, range.startMs) : 0
+  const loopEnd = range ? Math.min(duration, range.endMs) : duration
 
   // Draw whenever the time changes.
   useEffect(() => {
@@ -58,9 +68,13 @@ export function ReplayCanvas({ frames, width, height, mirror, videoUrl, videoSta
     const step = (now: number) => {
       if (video && videoUrl) {
         timeRef.current = video.currentTime * 1000 + videoStartMs
+        if (timeRef.current > loopEnd || timeRef.current < loopStart - 100) {
+          timeRef.current = loopStart
+          video.currentTime = Math.max(0, (loopStart - videoStartMs) / 1000)
+        }
       } else {
         timeRef.current += (now - last) * speed
-        if (timeRef.current > duration) timeRef.current = 0
+        if (timeRef.current > loopEnd || timeRef.current < loopStart) timeRef.current = loopStart
       }
       last = now
       setTime(timeRef.current)
@@ -68,13 +82,23 @@ export function ReplayCanvas({ frames, width, height, mirror, videoUrl, videoSta
     }
     raf = requestAnimationFrame(step)
     return () => cancelAnimationFrame(raf)
-  }, [playing, speed, duration, videoUrl, videoStartMs])
+  }, [playing, speed, loopStart, loopEnd, videoUrl, videoStartMs])
 
-  const seek = (ms: number) => {
-    timeRef.current = ms
-    setTime(ms)
-    if (videoRef.current) videoRef.current.currentTime = Math.max(0, (ms - videoStartMs) / 1000)
-  }
+  const seek = useCallback(
+    (ms: number) => {
+      timeRef.current = ms
+      setTime(ms)
+      if (videoRef.current) videoRef.current.currentTime = Math.max(0, (ms - videoStartMs) / 1000)
+    },
+    [videoStartMs],
+  )
+
+  useImperativeHandle(handle, () => ({
+    seek: (ms: number) => {
+      setPlaying(false)
+      seek(ms)
+    },
+  }), [seek])
 
   return (
     <div className="replay">

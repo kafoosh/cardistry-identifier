@@ -110,6 +110,13 @@ export function activeSpan(frames: Frame[]): { startMs: number; endMs: number } 
   return { startMs: Math.max(t0, first - LEAD_MS - 150), endMs: Math.min(t1, last + TAIL_MS) }
 }
 
+/** Frames between startMs and endMs, with times rebased so the first is 0. */
+export function sliceFrames(frames: Frame[], startMs: number, endMs: number): Frame[] {
+  const kept = frames.filter((f) => f.t >= startMs && f.t <= endMs)
+  const base = kept.length ? kept[0].t : 0
+  return kept.map((f) => ({ t: f.t - base, hands: f.hands }))
+}
+
 /** Cuts idle time off both ends and rebases times to start at 0. Returns the trimmed frames and how much was cut from the start. */
 export function trimIdle(frames: Frame[]): { frames: Frame[]; cutStartMs: number } {
   const span = activeSpan(frames)

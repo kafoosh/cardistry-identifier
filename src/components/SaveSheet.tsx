@@ -1,16 +1,21 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { detectActiveHands, keepHands } from '../recording/activeHands'
 import { longestGapMs, qualityScore, type Capture } from '../recording/recorder'
+import { sliceFrames } from '../recognition/motion'
 import { SLOT_COLOURS } from '../tracking/draw'
 import type { Frame } from '../tracking/types'
 import { MovePicker } from './MovePicker'
-import { ReplayCanvas } from './ReplayCanvas'
+import { ReplayCanvas, type ReplayHandle } from './ReplayCanvas'
+import { TrimBar } from './TrimBar'
 
 export interface SaveDetails {
   moveName: string
   keepVideo: boolean
-  /** Frames with idle hands removed. */
+  /** Frames inside the trim, with idle hands removed; times start at 0. */
   frames: Frame[]
+  durationMs: number
+  /** Frame time at which the kept video's time 0 falls, after trimming. */
+  videoStartMs: number
 }
 
 interface Props {
@@ -29,14 +34,22 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
   const [moveName, setMoveName] = useState(declared)
   const [editingName, setEditingName] = useState(!declared)
   const [keepVideo, setKeepVideo] = useState(true)
+  const fullMs = capture.frames.length ? capture.frames[capture.frames.length - 1].t : 0
+  const [trim, setTrim] = useState(() => capture.suggestedTrim ?? { startMs: 0, endMs: fullMs })
+  const replay = useRef<ReplayHandle>(null)
+  const trimmed = useMemo(() => sliceFrames(capture.frames, trim.startMs, trim.endMs), [capture.frames, trim])
   const activity = useMemo(() => detectActiveHands(capture.frames), [capture.frames])
   const [kept, setKept] = useState(() => new Set(activity.filter((h) => h.active).map((h) => h.slot)))
-  const frames = useMemo(() => keepHands(capture.frames, kept), [capture.frames, kept])
+  // Replay shows the whole take (so the cut can be widened again); saving keeps only the trimmed part.
+  const replayFrames = useMemo(() => keepHands(capture.frames, kept), [capture.frames, kept])
+  const frames = useMemo(() => keepHands(trimmed, kept), [trimmed, kept])
+  const trimBase = capture.frames.find((f) => f.t >= trim.startMs)?.t ?? 0
+  const durationMs = frames.length ? frames[frames.length - 1].t : 0
 
   const videoUrl = useMemo(() => (capture.video ? URL.createObjectURL(capture.video) : null), [capture.video])
   useEffect(() => () => void (videoUrl && URL.revokeObjectURL(videoUrl)), [videoUrl])
 
-  const tooShort = capture.frames.length < 10
+  const tooShort = frames.length < 10
   const quality = useMemo(() => qualityScore(frames), [frames])
   const gap = useMemo(() => longestGapMs(frames), [frames])
   const canSave = Boolean(moveName.trim()) && !tooShort && kept.size > 0
@@ -50,7 +63,7 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
     })
 
   const save = (again: boolean) => {
-    if (canSave) onSave({ moveName: moveName.trim(), keepVideo, frames }, again)
+    if (canSave) onSave({ moveName: moveName.trim(), keepVideo, frames, durationMs, videoStartMs: capture.videoStartMs - trimBase }, again)
   }
 
   return (
@@ -72,20 +85,30 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
           )}
         </div>
         <ReplayCanvas
-          frames={frames}
+          frames={replayFrames}
+          range={trim}
+          handle={replay}
           width={width}
           height={height}
           mirror={mirror}
           videoUrl={videoUrl}
           videoStartMs={capture.videoStartMs}
         />
+        <TrimBar
+          durationMs={fullMs}
+          value={trim}
+          onChange={(next, moved) => {
+            setTrim(next)
+            replay.current?.seek(moved === 'start' ? next.startMs : next.endMs)
+          }}
+        />
         <p className="small muted">
-          {(capture.durationMs / 1000).toFixed(1)}s · {frames.length} frames
+          {(durationMs / 1000).toFixed(1)}s kept of {(fullMs / 1000).toFixed(1)}s · {frames.length} frames
           {' · '}hands tracked {(quality * 100).toFixed(0)}%
           {gap > 0 ? ` · longest drop ${(gap / 1000).toFixed(2)}s` : ' · no drops'}
           {capture.video ? ' · video clip captured' : ''}
         </p>
-        {tooShort && <p className="hint">This take is very short. Try again and hold the move for longer.</p>}
+        {tooShort && <p className="hint">This take is very short. Widen the trim, or try again and hold the move for longer.</p>}
 
         {activity.some((h) => h.presence > 0) && (
           <div className="field">
