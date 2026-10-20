@@ -88,8 +88,15 @@ async function verifyTurnstile(env: Env, token: unknown, ip: string | null) {
   form.append('response', token)
   if (ip) form.append('remoteip', ip)
   const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: form })
-  const out = (await res.json()) as { success: boolean }
-  if (!out.success) throw new HttpError(403, 'Captcha check failed. Reload the page and try again.')
+  const out = (await res.json()) as { success: boolean; 'error-codes'?: string[]; hostname?: string }
+  if (!out.success) {
+    const codes = out['error-codes'] ?? []
+    console.warn('Turnstile rejected', codes, out.hostname)
+    if (codes.some((c) => c.includes('secret'))) {
+      throw new HttpError(500, 'The server\'s Turnstile secret is wrong or missing (invalid-input-secret).')
+    }
+    throw new HttpError(403, `Captcha check failed (${codes.join(', ') || 'unknown'}). Reload the page and try again.`)
+  }
 }
 
 /** Increments today's counters for each key and throws if any is over the limit. */
