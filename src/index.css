@@ -51,7 +51,7 @@ button.primary {
 .app {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  min-height: 100%;
   max-width: 1100px;
   margin: 0 auto;
   padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
@@ -97,8 +97,10 @@ button.primary {
 }
 
 .stage-wrap {
-  flex: 1;
-  min-height: 0;
+  /* Fixed share of the screen so the controls below always stay reachable;
+     the page scrolls if they don't fit. */
+  flex: none;
+  height: clamp(240px, 58vh, 720px);
   display: flex;
 }
 
@@ -109,7 +111,6 @@ button.primary {
   overflow: hidden;
   background: #000;
   border: 1px solid var(--border);
-  min-height: 260px;
 }
 
 .stage video,
@@ -249,7 +250,11 @@ button.primary {
     width: 100%;
     padding: 6px 0;
   }
+  .app {
+    height: 100%;
+  }
   .stage-wrap {
+    flex: 1;
     height: calc(100% - 48px);
   }
   .panel {
