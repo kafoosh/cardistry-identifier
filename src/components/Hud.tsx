@@ -30,20 +30,32 @@ export function Hud({ loopRef, state, mirror }: Props) {
   const stateRef = useRef(state)
   const boxes = useRef(new Map<HandLabel, Box>())
 
+  // Draws only when there is something new: a tracked frame, a new answer,
+  // or a box still easing towards its hand. A loop at the display rate
+  // (120 Hz on newer iPhones) would repaint the overlay far more often than
+  // the hands are tracked, competing with the tracker for the GPU.
+  const kickRef = useRef(() => {})
+
   useEffect(() => {
     stateRef.current = state
+    kickRef.current()
   }, [state])
 
   useEffect(() => {
     return loopRef.current?.onFrame((f) => {
       frameRef.current = f
+      kickRef.current()
     })
   }, [loopRef])
 
   useEffect(() => {
     let raf = 0
+    let blank = false
+    const kick = () => {
+      if (!raf) raf = requestAnimationFrame(draw)
+    }
     const draw = () => {
-      raf = requestAnimationFrame(draw)
+      raf = 0
       const canvas = canvasRef.current
       const frame = frameRef.current
       const ctx = canvas?.getContext('2d')
@@ -52,19 +64,27 @@ export function Hud({ loopRef, state, mirror }: Props) {
       if (video?.videoWidth && (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight)) {
         canvas.width = video.videoWidth
         canvas.height = video.videoHeight
+        blank = true
       }
       const w = canvas.width
       const h = canvas.height
-      ctx.clearRect(0, 0, w, h)
       const s = stateRef.current
-      if (!frame || !s) return
-      const guesses = s.showLast && s.last ? s.last.guesses : []
+      const guesses = frame && s?.showLast && s.last ? s.last.guesses : []
+      if (!guesses.length) {
+        boxes.current.clear()
+        if (!blank) ctx.clearRect(0, 0, w, h)
+        blank = true
+        return
+      }
+      ctx.clearRect(0, 0, w, h)
+      blank = false
       // Canvas pixels per screen pixel (the canvas is scaled to fit), so lines and text keep a readable size.
       const unit = Math.max(w / (canvas.clientWidth || w), h / (canvas.clientHeight || h))
       const seen = new Set<HandLabel>()
       const labels: Box[] = []
+      let easing = false
       for (const g of guesses) {
-        const target = regionFor(frame, g.hand, g.slot)
+        const target = regionFor(frame!, g.hand, g.slot)
         if (!target) continue
         seen.add(g.hand)
         const px: Box = {
@@ -83,13 +103,20 @@ export function Hud({ loopRef, state, mirror }: Props) {
               y1: prev.y1 + (px.y1 - prev.y1) * 0.3,
             }
           : px
+        if (Math.max(Math.abs(px.x0 - b.x0), Math.abs(px.x1 - b.x1), Math.abs(px.y0 - b.y0), Math.abs(px.y1 - b.y1)) > 0.5)
+          easing = true
         boxes.current.set(g.hand, b)
         drawTarget(ctx, b, g.moveName, g.strength, g.hand === 'Both' ? BOTH : ONE, unit, w, h, labels)
       }
       for (const k of [...boxes.current.keys()]) if (!seen.has(k)) boxes.current.delete(k)
+      if (easing) kick()
     }
-    raf = requestAnimationFrame(draw)
-    return () => cancelAnimationFrame(raf)
+    kickRef.current = kick
+    kick()
+    return () => {
+      cancelAnimationFrame(raf)
+      kickRef.current = () => {}
+    }
   }, [mirror])
 
   return <canvas ref={canvasRef} className="hud" aria-hidden="true" />

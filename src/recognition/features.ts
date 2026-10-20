@@ -23,6 +23,9 @@ export interface FeatureSequence {
   durationMs: number
   /** Whether card tracking was on for (nearly) all of it, so the card part means something. */
   hasCards: boolean
+  /** Values per frame, and how many of them are the hand part, when projected (see projection.ts). */
+  dim?: number
+  handDim?: number
 }
 
 type MaybeHand = { landmarks: Point3[]; handedness: Handedness } | null

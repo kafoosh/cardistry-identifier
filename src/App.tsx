@@ -4,6 +4,7 @@ import { createCardTracking } from './cards/cardTrackerClient'
 import { loadDeck } from './cards/deckModel'
 import { DeckCalibration } from './components/DeckCalibration'
 import { CameraSettings } from './components/CameraSettings'
+import { MotionStrip } from './components/MotionStrip'
 import { MovePicker } from './components/MovePicker'
 import { loadRecordSetup, saveRecordSetup, type RecordSetupValue } from './recording/recordSetup'
 import { SaveSheet, type SaveDetails } from './components/SaveSheet'
@@ -11,7 +12,7 @@ import { Hud } from './components/Hud'
 import { IdentifyBoxes, IdentifyStatus } from './components/IdentifyPanel'
 import { SharedLibrary } from './components/SharedLibrary'
 import { Identifier, type IdentifyState } from './recognition/identifier'
-import { activeSpan, MOTION_ON } from './recognition/motion'
+import { activeSpan } from './recognition/motion'
 import { MotionWatcher } from './recognition/motionWatcher'
 import { getMatcher } from './recognition/shared'
 import { loadTemplates } from './recognition/templates'
@@ -74,12 +75,28 @@ const EMPTY_STATS: TrackingStats = {
 }
 
 let trackerPromise: Promise<LoadedTracker> | null = null
-function getTracker() {
-  // `?cpu` in the URL forces the CPU delegate, for devices with a broken GPU path.
-  trackerPromise ??= loadHandTracker(!new URLSearchParams(location.search).has('cpu')).catch((err) => {
+let trackerLite = false
+function getTracker(lite: boolean) {
+  if (trackerPromise && trackerLite !== lite) {
+    // Switching models: free the old one (the loop using it has been stopped).
+    void trackerPromise.then((t) => t.landmarker.close()).catch(() => {})
     trackerPromise = null
-    throw err
-  })
+  }
+  trackerLite = lite
+  // `?cpu` in the URL forces the CPU delegate, for devices with a broken GPU path.
+  const preferGpu = !new URLSearchParams(location.search).has('cpu')
+  trackerPromise ??= loadHandTracker(preferGpu, lite)
+    .catch((err) => {
+      // The lighter model is a convenience: if this device won't load it, use the full one rather than no camera.
+      if (!lite) throw err
+      console.warn('Lite hand model failed, using the full model', err)
+      trackerLite = false
+      return loadHandTracker(preferGpu, false)
+    })
+    .catch((err) => {
+      trackerPromise = null
+      throw err
+    })
   return trackerPromise
 }
 
@@ -120,6 +137,11 @@ export default function App() {
   const [showCards, setShowCards] = useState(() => readPref('cardistry.showCards', true))
   const [hud, setHud] = useState(() => readPref('cardistry.hud', true))
   const [wireframe, setWireframe] = useState(() => readPref('cardistry.wireframe', true))
+  const [fastHands, setFastHands] = useState(() => readPref('cardistry.fastHands', false))
+  const fastHandsRef = useRef(fastHands)
+  useEffect(() => {
+    fastHandsRef.current = fastHands
+  }, [fastHands])
   // One tracker for the app's life; it keeps the learned deck between camera sessions.
   const [cardTracker] = useState(() => {
     const t = createCardTracking(loadDeck())
@@ -141,7 +163,6 @@ export default function App() {
       return true
     }
   })
-  const [motion, setMotion] = useState({ energy: 0, active: false, on: MOTION_ON })
   const [mode, setMode] = useState<Mode>('record')
   const [identify, setIdentify] = useState<IdentifyState | null>(null)
   const [templateInfo, setTemplateInfo] = useState({
@@ -164,6 +185,15 @@ export default function App() {
   const [showGuide, setShowGuide] = useState(true)
   const [delegate, setDelegate] = useState('')
   const [stats, setStats] = useState<TrackingStats>(EMPTY_STATS)
+  /** The warning shown over the camera, if tracking is slow or keeps losing the hands. */
+  const [trackingWarn, setTrackingWarn] = useState<'slow' | 'hands' | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
+  // The full stats and hand labels are only on screen in Settings; updating
+  // them while it is closed would re-render the whole camera screen for nothing.
+  const settingsOpenRef = useRef(false)
+  useEffect(() => {
+    settingsOpenRef.current = showSettings
+  }, [showSettings])
   const [labels, setLabels] = useState<[Handedness | null, Handedness | null]>([null, null])
 
   const stop = useCallback(() => {
@@ -185,7 +215,7 @@ export default function App() {
       setPhase('loading')
       setError('')
       try {
-        const [tracker, stream] = await Promise.all([getTracker(), openCamera(nextFacing)])
+        const [tracker, stream] = await Promise.all([getTracker(fastHandsRef.current), openCamera(nextFacing)])
         streamRef.current = stream
         const video = videoRef.current!
         video.srcObject = stream
@@ -202,6 +232,7 @@ export default function App() {
           w.__cards = cardTracker
         }
         loop.onFrame((f) => {
+          if (!settingsOpenRef.current) return
           setLabels((prev) => {
             const next: [Handedness | null, Handedness | null] = [null, null]
             for (const h of f.hands) next[h.slot] = h.handedness
@@ -232,27 +263,25 @@ export default function App() {
   useEffect(() => {
     if (phase !== 'live') return
     const id = setInterval(() => {
-      if (loopRef.current) setStats(loopRef.current.stats.read())
+      if (!loopRef.current) return
+      const s = loopRef.current.stats.read()
+      setTrackingWarn(
+        s.fps <= 0 ? null : s.fps < 20 ? 'slow' : Math.max(s.presence[0], s.presence[1]) < 0.6 ? 'hands' : null,
+      )
+      if (settingsOpenRef.current) setStats(s)
     }, 500)
-    return () => clearInterval(id)
+    return () => {
+      clearInterval(id)
+      setTrackingWarn(null)
+    }
   }, [phase])
+
+  // Fill Settings in straight away rather than on the next tick.
+  useEffect(() => {
+    if (showSettings && loopRef.current) setStats(loopRef.current.stats.read())
+  }, [showSettings])
 
   useEffect(() => stop, [stop])
-
-  useEffect(() => {
-    if (phase !== 'live') return
-    const id = setInterval(() => {
-      const m = watcherRef.current?.latest
-      if (!m) return
-      // Only re-render when the bar would visibly change.
-      setMotion((prev) =>
-        Math.abs(prev.energy - m.energy) < 0.01 && prev.active === m.active && prev.on === m.on
-          ? prev
-          : { energy: m.energy, active: m.active, on: m.on },
-      )
-    }, 150)
-    return () => clearInterval(id)
-  }, [phase])
 
   const finishRecording = useCallback(async () => {
     const rec = recorderRef.current
@@ -420,7 +449,7 @@ export default function App() {
         shared: used.filter((t) => t.source === 'shared').length,
         sharedError,
       })
-      thresholdRef.current.base = (await matcher.selfTest()).threshold
+      thresholdRef.current.base = matcher.threshold
       if (cancelled || !loopRef.current) return
       if (!watcherRef.current) return
       identifier = new Identifier(
@@ -463,8 +492,6 @@ export default function App() {
     setTab('live')
     if (phase !== 'live') void start(facing)
   }
-
-  const [showSettings, setShowSettings] = useState(false)
 
   // Apply the card toggles to the running loop.
   useEffect(() => {
@@ -514,8 +541,8 @@ export default function App() {
   const live = phase === 'live'
   const calibrating = live && trackCards && deckStep === 'calibrating'
   const hasSavedDeck = calibrating && cardTracker.hasDeck
-  const lowFps = live && stats.fps > 0 && stats.fps < 20
-  const losingHands = live && stats.fps > 0 && Math.max(stats.presence[0], stats.presence[1]) < 0.6
+  const lowFps = live && trackingWarn === 'slow'
+  const losingHands = live && trackingWarn === 'hands'
 
   return (
     <div className={`app ${tab === 'live' ? 'app-camera' : ''}`}>
@@ -625,16 +652,7 @@ export default function App() {
                 : 'Losing your hands. Try more light or a plainer background.'}
             </div>
           )}
-          {live && (
-            <div className={`motion-strip ${motion.active ? 'active' : ''}`} title="Finger motion">
-              <span
-                style={{
-                  width: `${Math.min(100, (motion.energy / (motion.on * 2.5)) * 100)}%`,
-                }}
-              />
-              <i style={{ left: `${100 / 2.5}%` }} />
-            </div>
-          )}
+          {live && <MotionStrip watcherRef={watcherRef} />}
 
           {calibrating && (
             <DeckCalibration
@@ -909,6 +927,23 @@ export default function App() {
             <span className="badge">{stats.inferenceMs.toFixed(0)} ms</span>
             <span className="badge">{delegate}</span>
           </div>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={fastHands}
+              disabled={recState !== 'ready'}
+              onChange={(e) => {
+                const on = e.target.checked
+                setFastHands(on)
+                fastHandsRef.current = on
+                remember('cardistry.fastHands', on)
+                // The model is loaded with the camera, so restart it on the new one.
+                if (phase === 'live') void start(facing)
+              }}
+            />
+            Faster but rougher hand tracking: loses a hand behind the deck more often and recognises moves less
+            well. Takes recorded with it match other takes poorly
+          </label>
           <div className="hands">
             {[0, 1].map((slot) => (
               <div className="hand" key={slot}>
