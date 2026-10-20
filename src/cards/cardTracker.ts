@@ -1139,8 +1139,15 @@ export class CardTracker {
     for (const t of this.fanTracks) {
       if (!used.has(t.id) && t.misses < FAN_MISSES && t.hits >= FAN_CONFIRM) next.push({ ...t, misses: t.misses + 1 })
     }
-    this.fanTracks = next
-    return next.filter((t) => t.hits >= FAN_CONFIRM)
+    // One wedge per fan: the longest-held first, and none whose hinge sits in or beside one already kept.
+    const kept: FanTrack[] = []
+    for (const t of next.sort((a, b) => a.misses - b.misses || b.hits - a.hits)) {
+      if (kept.length >= MAX_FANS) break
+      if (kept.some((k) => Math.hypot(k.hx - t.hx, k.hy - t.hy) < expected * 0.5 || inSector(k, t.hx, t.hy))) continue
+      kept.push(t)
+    }
+    this.fanTracks = kept
+    return kept.filter((t) => t.hits >= FAN_CONFIRM)
   }
 
   /** Share of a rectangle that lies over a hand: its palm, or within a finger's width of a finger bone. */
