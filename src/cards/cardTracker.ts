@@ -17,6 +17,21 @@ const KEEP_SCORE = 0.1
 /** Short side over long side: face-on is the card's own proportions, tilted packets look thinner. */
 const MIN_RATIO = 0.3
 const MAX_RATIO = CARD_ASPECT * 1.15
+/** A full deck seen edge-on: its white side, 88 mm by about 17; thinner packets go down to this. */
+const EDGE_RATIO = 0.2
+const MIN_EDGE_RATIO = 0.1
+/** Edge score an edge-on packet needs. */
+const EDGE_SCORE = 0.22
+/** A blob at least this elongated may be a packet seen edge-on even when it also fits a face. */
+const THIN_BLOB = 0.45
+/**
+ * A card tilted towards or away from the camera: its long sides look shorter, so it looks squarer,
+ * and its short sides lean (radians off square). Seeds try this lean at this squareness.
+ */
+const TILT_MAX_RATIO = 1
+const MAX_SKEW = 0.6
+const TILT_SEED = 0.45
+const TILT_RATIO = 0.85
 /** Blob area limits relative to the deck's face (fingers hide some; a stack's side, a fan or a finger can join a blob). */
 const MIN_AREA = 0.15
 const MAX_AREA = 6
@@ -30,9 +45,16 @@ const MAX_GAIN = 1.3
 const SEG_ANGLES = 36
 const SEG_RHO = 3
 const SEG_MIN_LEN = 0.35
-/** An edge that has sat in the same place for this many processed frames is furniture, not a card. */
-const BG_AGE = 30
-/** An edge-seeded rectangle whose sides are mostly such old edges is not a packet. */
+/**
+ * How long an edge has sat in one place: a level that rises by BG_RISE of the way to 1 on each
+ * processed frame the edge is there and falls by BG_FALL on each it isn't. Past BG_EDGE it is
+ * furniture, not a card: about 20 frames in place, and it stays furniture while a hand or a fan
+ * covers it for a few seconds.
+ */
+const BG_RISE = 0.04
+const BG_FALL = 0.01
+const BG_EDGE = 0.5
+/** A rectangle whose sides are mostly such old edges is not a new packet. */
 const MAX_STALE = 0.4
 /** Fans: hinge votes land in cells this wide; edge directions are binned this finely over 180°. */
 const FAN_CELL = 4
@@ -51,6 +73,21 @@ const FAN_MIN_TEXTURE = 0.25
 const FAN_CONFIRM = 2
 const FAN_MISSES = 3
 const MAX_FANS = 2
+/** A rectangle mostly over a hand (palm and fingers) is often the hand's own outline: it needs a clearer fit to count. */
+const HAND_COVER = 0.5
+const HAND_SCORE = 0.25
+/** A thin strip mostly over a hand is a finger, however straight. */
+const THIN_HAND_COVER = 0.3
+/** Finger width as a share of hand size (wrist to middle knuckle), for telling what a hand covers. */
+const FINGER_R = 0.13
+const PALM = [0, 1, 5, 9, 13, 17]
+const FINGERS = [
+  [0, 1, 2, 3, 4],
+  [0, 5, 6, 7, 8],
+  [9, 10, 11, 12],
+  [13, 14, 15, 16],
+  [0, 17, 18, 19, 20],
+]
 
 /** Where the deck is held for calibration: a card-shaped box in the middle, in normalised frame coordinates. */
 export function calibrationBox(aspect: number) {
@@ -78,18 +115,39 @@ interface HandGeo {
   size: number
 }
 
-/** A rectangle in working-frame pixels; angle is the long side's direction. */
+/**
+ * A card's outline in working-frame pixels; angle is the long side's direction. A card tilted
+ * towards or away from the camera looks slanted, so the short sides may lean by skew radians off
+ * square (a parallelogram, which is what a small tilted card looks like).
+ */
 interface Rect {
   cx: number
   cy: number
   angle: number
   length: number
   width: number
+  skew?: number
+}
+
+/** What a fitted outline may look like: long side in pixels, short over long side, and lean. */
+interface Limits {
+  minLen: number
+  maxLen: number
+  minRatio: number
+  maxRatio: number
+  maxSkew: number
 }
 
 interface Track extends Rect {
   id: number
   misses: number
+}
+
+interface Fit {
+  rect: Rect
+  score: number
+  /** Fitted as a packet seen edge-on. */
+  thin?: boolean
 }
 
 /** A fan in working-frame pixels: hinge, sector (counter-clockwise from `from` to `to`) and reach. */
@@ -145,8 +203,8 @@ export class CardTracker {
   private lastPx: Uint8ClampedArray | null = null
   /** 1 where a pixel is white-ish (bright and unsaturated). */
   private white = new Uint8Array(0)
-  /** How many processed frames in a row each pixel has been a strong edge (capped). */
-  private edgeAge = new Uint8Array(0)
+  /** How long each pixel has been a strong edge (see BG_RISE). */
+  private edgeAge = new Float32Array(0)
   private tracks: Track[] = []
   private fanTracks: FanTrack[] = []
   private fanTick = 0
@@ -275,7 +333,7 @@ export class CardTracker {
       this.gx = new Float32Array(n)
       this.gy = new Float32Array(n)
       this.white = new Uint8Array(n)
-      this.edgeAge = new Uint8Array(n)
+      this.edgeAge = new Float32Array(n)
     }
     const grey = new Float32Array(n)
     for (let i = 0; i < n; i++) grey[i] = px[i * 4] * 0.3 + px[i * 4 + 1] * 0.59 + px[i * 4 + 2] * 0.11
@@ -310,9 +368,8 @@ export class CardTracker {
     const strong = this.norm * 0.5
     const age = this.edgeAge
     for (let i = 0; i < n; i++) {
-      if (Math.abs(gx[i]) + Math.abs(gy[i]) >= strong) {
-        if (age[i] < 255) age[i]++
-      } else age[i] = 0
+      if (Math.abs(gx[i]) + Math.abs(gy[i]) >= strong) age[i] += (1 - age[i]) * BG_RISE
+      else age[i] *= 1 - BG_FALL
     }
   }
 
@@ -343,10 +400,7 @@ export class CardTracker {
     const px = this.lastPx
     if (!px) return null
     const { w, h } = this
-    const ux = Math.cos(r.angle)
-    const uy = Math.sin(r.angle)
-    const vx = -uy
-    const vy = ux
+    const { ux, uy, vx, vy } = axes(r)
     const inset = Math.max(1.5, Math.min(r.length, r.width) * 0.06)
     let sr = 0
     let sg = 0
@@ -397,10 +451,7 @@ export class CardTracker {
   /** The share of a rectangle's edge pixels that have been edges for a long time (furniture, shelves, drawers). */
   private staleness(r: Rect): number {
     const { w, h, gx, gy, edgeAge } = this
-    const ux = Math.cos(r.angle)
-    const uy = Math.sin(r.angle)
-    const vx = -uy
-    const vy = ux
+    const { ux, uy, vx, vy, lx, ly, sx, sy } = axes(r)
     let hits = 0
     let old = 0
     const walk = (ox: number, oy: number, dx: number, dy: number, len: number, nx: number, ny: number) => {
@@ -422,7 +473,7 @@ export class CardTracker {
         }
         if (bestI < 0 || best < this.norm * 0.3) continue
         hits++
-        if (edgeAge[bestI] >= BG_AGE) old++
+        if (edgeAge[bestI] >= BG_EDGE) old++
       }
     }
     for (const sign of [-1, 1]) {
@@ -432,8 +483,8 @@ export class CardTracker {
         ux,
         uy,
         r.length,
-        vx,
-        vy,
+        lx,
+        ly,
       )
       walk(
         r.cx + ux * sign * (r.length / 2) - vx * (r.width / 2),
@@ -441,8 +492,8 @@ export class CardTracker {
         vx,
         vy,
         r.width,
-        ux,
-        uy,
+        sx,
+        sy,
       )
     }
     return hits ? old / hits : 0
@@ -494,10 +545,7 @@ export class CardTracker {
 
   /** Whiteness just inside (or, with outside, just beyond) each of the four sides. */
   private rim(r: Rect, outside = false): number[] {
-    const ux = Math.cos(r.angle)
-    const uy = Math.sin(r.angle)
-    const vx = -uy
-    const vy = ux
+    const { ux, uy, vx, vy } = axes(r)
     const inset = Math.max(1.5, Math.min(r.length, r.width) * 0.06) * (outside ? -1.5 : 1)
     const L = r.length
     const W = r.width
@@ -517,10 +565,7 @@ export class CardTracker {
 
   /** The four sides' edge strengths for a rectangle scaled by s about its centre. */
   private sides(r: Rect, s: number): number[] {
-    const ux = Math.cos(r.angle)
-    const uy = Math.sin(r.angle)
-    const vx = -uy
-    const vy = ux
+    const { ux, uy, vx, vy, lx, ly, sx, sy } = axes(r)
     const L = r.length * s
     const W = r.width * s
     const out: number[] = []
@@ -529,12 +574,12 @@ export class CardTracker {
     for (const sign of [-1, 1]) {
       const ox = r.cx + vx * sign * (W / 2) - ux * (L / 2)
       const oy = r.cy + vy * sign * (W / 2) - uy * (L / 2)
-      out.push(this.lineEdge(ox, oy, ux, uy, L, -sign * vx, -sign * vy))
+      out.push(this.lineEdge(ox, oy, ux, uy, L, -sign * lx, -sign * ly))
     }
     for (const sign of [-1, 1]) {
       const ox = r.cx + ux * sign * (L / 2) - vx * (W / 2)
       const oy = r.cy + uy * sign * (L / 2) - vy * (W / 2)
-      out.push(this.lineEdge(ox, oy, vx, vy, W, -sign * ux, -sign * uy))
+      out.push(this.lineEdge(ox, oy, vx, vy, W, -sign * sx, -sign * sy))
     }
     return out
   }
@@ -560,7 +605,7 @@ export class CardTracker {
   }
 
   /** Nudges a rectangle onto the edges by coordinate ascent, within the given limits. */
-  private refine(start: Rect, limits: { minLen: number; maxLen: number; minRatio: number; maxRatio: number }) {
+  private refine(start: Rect, limits: Limits) {
     let r = { ...start }
     let best = this.score(r)
     let step = { pos: Math.max(1, r.length * 0.05), angle: 0.06, size: 0.05 }
@@ -572,12 +617,15 @@ export class CardTracker {
         (q, sg) => ({ ...q, length: q.length * (1 + sg * step.size), width: q.width * (1 + sg * step.size) }),
         (q, sg) => ({ ...q, width: q.width * (1 + sg * step.size) }),
       ]
+      // Leaning the short sides (a tilted card) only where tilted outlines are allowed.
+      if (limits.maxSkew > 0) tries.push((q, sg) => ({ ...q, skew: (q.skew ?? 0) + sg * step.angle * 2 }))
       for (const make of tries) {
         for (const sg of [-1, 1]) {
           const q = make(r, sg)
           const ratio = q.width / q.length
           if (q.length < limits.minLen || q.length > limits.maxLen) continue
           if (ratio < limits.minRatio || ratio > limits.maxRatio) continue
+          if (Math.abs(q.skew ?? 0) > limits.maxSkew) continue
           const sc = this.score(q)
           if (sc > best) {
             best = sc
@@ -643,13 +691,18 @@ export class CardTracker {
    * back is a ring), so try every orientation and a few sizes about its
    * centre, then snap the best few onto the edges.
    */
-  private fitCard(blob: Rect, limits: { minLen: number; maxLen: number; minRatio: number; maxRatio: number }) {
+  private fitCard(blob: Rect, limits: Limits) {
     const seeds: { r: Rect; s: number }[] = []
     for (let a = 0; a < Math.PI; a += Math.PI / 18) {
       for (const sl of [0.6, 0.8, 1]) {
         const length = Math.min(limits.maxLen, Math.max(limits.minLen, blob.length * sl))
-        for (const ratio of [CARD_ASPECT, 0.45]) {
+        for (const ratio of limits.maxRatio <= MIN_RATIO ? [EDGE_RATIO] : [CARD_ASPECT, 0.45]) {
           const r = { cx: blob.cx, cy: blob.cy, angle: a, length, width: length * ratio }
+          seeds.push({ r, s: this.score(r) })
+        }
+        // A card tilted towards the camera: its long sides foreshortened, its short sides leaning.
+        for (const skew of limits.maxSkew > 0 ? [-TILT_SEED, TILT_SEED] : []) {
+          const r = { cx: blob.cx, cy: blob.cy, angle: a, length, width: length * TILT_RATIO, skew }
           seeds.push({ r, s: this.score(r) })
         }
       }
@@ -664,13 +717,7 @@ export class CardTracker {
   }
 
   /** The best sideways card shape near a point, from a grid of positions, sizes and tilts snapped onto edges. */
-  private sweep(
-    cx: number,
-    cy: number,
-    bw: number,
-    bh: number,
-    limits: { minLen: number; maxLen: number; minRatio: number; maxRatio: number },
-  ) {
+  private sweep(cx: number, cy: number, bw: number, bh: number, limits: Limits) {
     const seeds: { r: Rect; s: number }[] = []
     for (const ox of [-0.15, 0, 0.15]) {
       for (const oy of [-0.15, 0, 0.15]) {
@@ -699,11 +746,7 @@ export class CardTracker {
    * card's long side and as its short side, on either side of the line,
    * and the best fits are refined onto the edges.
    */
-  private edgeFits(
-    near: HandGeo[],
-    expected: number,
-    limits: { minLen: number; maxLen: number; minRatio: number; maxRatio: number },
-  ) {
+  private edgeFits(near: HandGeo[], expected: number, limits: Limits) {
     if (!near.length) return []
     const { w, h, gx, gy, norm } = this
     let x0 = Infinity
@@ -832,7 +875,7 @@ export class CardTracker {
     const holder = seen ?? (this.holderMissing <= 30 ? this.lastHolder : null)
 
     // The deck: a card-proportioned white blob centred in the box, snapped onto its edges.
-    const limits = { minLen: bw * 0.4, maxLen: bw * 1.2, minRatio: CARD_ASPECT * 0.8, maxRatio: MAX_RATIO }
+    const limits = { minLen: bw * 0.4, maxLen: bw * 1.2, minRatio: CARD_ASPECT * 0.8, maxRatio: MAX_RATIO, maxSkew: 0 }
     let found: Rect | null = null
     let bestScore = 0
     // Last frame's fit first: the deck is being held still, so it's usually right where it was.
@@ -1097,12 +1140,43 @@ export class CardTracker {
     for (const t of this.fanTracks) {
       if (!used.has(t.id) && t.misses < FAN_MISSES && t.hits >= FAN_CONFIRM) next.push({ ...t, misses: t.misses + 1 })
     }
-    this.fanTracks = next
-    return next.filter((t) => t.hits >= FAN_CONFIRM)
+    // One wedge per fan: the longest-held first, and none whose hinge sits in or beside one already kept.
+    const kept: FanTrack[] = []
+    for (const t of next.sort((a, b) => a.misses - b.misses || b.hits - a.hits)) {
+      if (kept.length >= MAX_FANS) break
+      if (kept.some((k) => Math.hypot(k.hx - t.hx, k.hy - t.hy) < expected * 0.5 || inSector(k, t.hx, t.hy))) continue
+      kept.push(t)
+    }
+    this.fanTracks = kept
+    return kept.filter((t) => t.hits >= FAN_CONFIRM)
+  }
+
+  /** Share of a rectangle that lies over a hand: its palm, or within a finger's width of a finger bone. */
+  private handCover(r: Rect, hands: HandGeo[]): number {
+    if (!hands.length) return 0
+    const { ux, uy, vx, vy } = axes(r)
+    let n = 0
+    let over = 0
+    for (let a = -0.4; a < 0.45; a += 0.2) {
+      for (let b = -0.4; b < 0.45; b += 0.2) {
+        const x = r.cx + ux * r.length * a + vx * r.width * b
+        const y = r.cy + uy * r.length * a + vy * r.width * b
+        n++
+        if (hands.some((g) => overHand(g, x, y))) over++
+      }
+    }
+    return over / n
   }
 
   private normalised(r: Rect): Omit<Packet, 'id' | 'hand'> {
-    return { cx: r.cx / this.w, cy: r.cy / this.h, angle: r.angle, length: r.length / this.h, width: r.width / this.h }
+    const out = {
+      cx: r.cx / this.w,
+      cy: r.cy / this.h,
+      angle: r.angle,
+      length: r.length / this.h,
+      width: r.width / this.h,
+    }
+    return r.skew ? { ...out, skew: r.skew } : out
   }
 
   /** Packets: solid card-shaped white blobs of about the deck's size near the hands, sitting on image edges. */
@@ -1138,37 +1212,57 @@ export class CardTracker {
     // camera, but the tracker's hand sizes swing too much when fingers are hidden.)
     const expected = deck.length * h
     const expectedArea = expected * expected * CARD_ASPECT
-    const limits = { minLen: expected * 0.5, maxLen: expected * 1.6, minRatio: MIN_RATIO, maxRatio: MAX_RATIO }
+    const limits = {
+      minLen: expected * 0.5,
+      maxLen: expected * 1.6,
+      minRatio: MIN_RATIO,
+      maxRatio: TILT_MAX_RATIO,
+      maxSkew: MAX_SKEW,
+    }
+    const edgeLimits = { ...limits, minRatio: MIN_EDGE_RATIO, maxRatio: MIN_RATIO, maxSkew: 0 }
 
     // Blobs anywhere (cropping to a region around the hands would cut a deck in half when the
     // tracker has lost the hand holding it); ones far from every hand are dropped at the end.
-    const found: Rect[] = []
+    const fits: Fit[] = []
     for (const { rect, fill } of this.blobs(0, 0, w - 1, h - 1)) {
       const area = rect.length * rect.width
       if (area < expectedArea * MIN_AREA || area > expectedArea * MAX_AREA) continue
       if (fill < MIN_FILL) continue
       const fit = this.fitCard(rect, limits)
-      if (!fit || fit.score < DETECT_SCORE) continue
-      // A rectangle inside a fan is the fan's outline, not a packet.
-      if (fans.some((f) => inSector(f, fit.rect.cx, fit.rect.cy))) continue
-      found.push(fit.rect)
+      if (fit && fit.score >= DETECT_SCORE) fits.push(fit)
+      // Maybe a packet seen edge-on: a thin white side. Thin shapes sit on edges more easily (a
+      // finger, a shelf, a card's own border), so the fit has to be clearer.
+      // A squarer blob that already fits a face is that face.
+      const thin = Math.min(rect.width, rect.length) <= Math.max(rect.width, rect.length) * THIN_BLOB
+      if (!thin && fit && fit.score >= DETECT_SCORE) continue
+      const edge = this.fitCard(rect, edgeLimits)
+      if (edge && edge.score >= EDGE_SCORE) fits.push({ ...edge, thin: true })
     }
     // Backs without a white border don't make a blob; their straight sides still give them away.
     for (const fit of this.borderless ? this.edgeFits(near, expected, limits) : []) {
-      if (fans.some((f) => inSector(f, fit.rect.cx, fit.rect.cy))) continue
       // Edges alone also outline drawers and shelves; those have been there all along.
-      if (this.staleness(fit.rect) > MAX_STALE) continue
-      if (
-        found.some((o) => Math.hypot(o.cx - fit.rect.cx, o.cy - fit.rect.cy) < Math.min(o.width, fit.rect.width) * 0.6)
-      )
-        continue
-      found.push(fit.rect)
+      if (this.staleness(fit.rect) <= MAX_STALE) fits.push(fit)
+    }
+    // Best first, and one rectangle per packet: two blobs of one packet (a finger across it) or a
+    // blob and an edge run often land on the same card.
+    const found: Rect[] = []
+    // Faces before edge-on fits: a face's white border also makes a thin strip, which isn't a packet.
+    for (const fit of fits.sort((a, b) => Number(a.thin ?? 0) - Number(b.thin ?? 0) || b.score - a.score)) {
+      const r = fit.rect
+      // A rectangle inside a fan is the fan's outline, not a packet.
+      if (fans.some((f) => inSector(f, r.cx, r.cy))) continue
+      // Pale skin reads as white, so a hand can outline itself; a card held over it still fits clearly.
+      if (fit.score < HAND_SCORE && this.handCover(r, near) > HAND_COVER) continue
+      // A finger is a thin pale strip too.
+      if (fit.thin && this.handCover(r, near) > THIN_HAND_COVER) continue
+      if (found.some((o) => overlaps(o, r, fit.thin ? 0.5 : 0.3))) continue
+      found.push(r)
     }
 
     // Match to known packets so ids stay put and outlines glide; a packet missing for a frame or two is kept.
     const used = new Set<number>()
     const next: Track[] = []
-    for (const f of found.sort((a, b) => b.length * b.width - a.length * a.width).slice(0, MAX_PACKETS)) {
+    for (const f of found.slice(0, MAX_PACKETS)) {
       let best: Track | null = null
       let bestD = Math.min(f.length, expected) * 0.6
       for (const t of this.tracks) {
@@ -1182,14 +1276,20 @@ export class CardTracker {
       if (best) {
         used.add(best.id)
         next.push({ ...smooth(best, f), id: best.id, misses: 0 })
-      } else if (near.length) next.push({ ...f, id: this.nextId++, misses: 0 })
+      } else if (near.length && this.staleness(f) <= MAX_STALE) {
+        // A new packet whose outline has sat in place for seconds is part of the room (a book, a frame).
+        next.push({ ...f, id: this.nextId++, misses: 0 })
+      }
       // With no hand seen for a while, only packets already being followed carry on; nothing new
       // starts, so a shelf can't become a packet.
     }
     for (const t of this.tracks) {
       if (used.has(t.id) || t.misses >= 2) continue
       // Still on its edges? Then it's just not a clean blob this frame (a finger across it, say).
-      if (this.score(t) >= KEEP_SCORE) next.push({ ...t, misses: t.misses + 1 })
+      const sc = this.score(t)
+      if (sc < KEEP_SCORE || (sc < HAND_SCORE && this.handCover(t, near) > HAND_COVER)) continue
+      if (next.some((o) => overlaps(o, t))) continue
+      next.push({ ...t, misses: t.misses + 1 })
     }
     this.tracks = next
 
@@ -1215,8 +1315,58 @@ export class CardTracker {
   }
 }
 
+/**
+ * A rectangle's directions: u along its length and v along its width (leaning by the skew), and
+ * the normals of its long sides (l, at right angles to u) and short sides (s, at right angles to v),
+ * each pointing the way u or v points.
+ */
+function axes(r: Rect) {
+  const ux = Math.cos(r.angle)
+  const uy = Math.sin(r.angle)
+  const k = r.skew ?? 0
+  const vx = -Math.sin(r.angle + k)
+  const vy = Math.cos(r.angle + k)
+  return { ux, uy, vx, vy, lx: -uy, ly: ux, sx: vy, sy: -vx }
+}
+
 function mean(v: number[]) {
   return v.reduce((s, x) => s + x, 0) / v.length
+}
+
+/** Whether two rectangles are one packet: either's centre lies well inside the other (within this share of its sides from its centre). */
+function overlaps(a: Rect, b: Rect, within = 0.3) {
+  const inside = (p: Rect, q: Rect) => {
+    const dx = q.cx - p.cx
+    const dy = q.cy - p.cy
+    const u = dx * Math.cos(p.angle) + dy * Math.sin(p.angle)
+    const v = -dx * Math.sin(p.angle) + dy * Math.cos(p.angle)
+    return Math.abs(u) < p.length * within && Math.abs(v) < p.width * within
+  }
+  return inside(a, b) || inside(b, a)
+}
+
+/** Whether a point is over a hand: inside the palm, or within a finger's width of a finger bone. */
+function overHand(g: HandGeo, x: number, y: number) {
+  const p = g.pts
+  let inPalm = false
+  for (let i = 0, j = PALM.length - 1; i < PALM.length; j = i++) {
+    const [xi, yi] = p[PALM[i]]
+    const [xj, yj] = p[PALM[j]]
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inPalm = !inPalm
+  }
+  if (inPalm) return true
+  const rad = g.size * FINGER_R
+  for (const f of FINGERS) {
+    for (let k = 0; k + 1 < f.length; k++) {
+      const [ax, ay] = p[f[k]]
+      const [bx, by] = p[f[k + 1]]
+      const dx = bx - ax
+      const dy = by - ay
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)))
+      if (Math.hypot(x - ax - t * dx, y - ay - t * dy) < rad) return true
+    }
+  }
+  return false
 }
 
 /** Whether a point lies in the fan's sector (a little beyond its reach counts too). */
@@ -1259,6 +1409,7 @@ function smooth(prev: Rect, next: Rect): Rect {
     angle: a2 / 2,
     length: prev.length + (next.length - prev.length) * k,
     width: prev.width + (next.width - prev.width) * k,
+    skew: (prev.skew ?? 0) + ((next.skew ?? 0) - (prev.skew ?? 0)) * k,
   }
 }
 
