@@ -81,10 +81,11 @@ const cleanText = (s: unknown, max: number) =>
     : ''
 
 async function verifyTurnstile(env: Env, token: unknown, ip: string | null) {
-  if (!env.TURNSTILE_SECRET) return // local dev
+  const secret = env.TURNSTILE_SECRET?.trim()
+  if (!secret) return // local dev
   if (typeof token !== 'string' || !token) throw new HttpError(403, 'Captcha missing. Reload the page and try again.')
   const form = new FormData()
-  form.append('secret', env.TURNSTILE_SECRET)
+  form.append('secret', secret)
   form.append('response', token)
   if (ip) form.append('remoteip', ip)
   const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: form })
