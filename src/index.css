@@ -454,6 +454,15 @@ button:disabled {
 .check input {
   width: 18px;
   height: 18px;
+  /* iOS Safari zooms the whole page in when a control under 16px gets focus,
+     and the zoom outlives the settings sheet. Keep every control at 16px. */
+  font-size: 16px;
+}
+
+input,
+select,
+textarea {
+  font-size: max(16px, 1em);
 }
 
 .sheet-actions {
