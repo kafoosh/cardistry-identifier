@@ -48,6 +48,13 @@ export default function App() {
   const [capture, setCapture] = useState<Capture | null>(null)
   const [knownMoves, setKnownMoves] = useState<string[]>([])
   const [savedNote, setSavedNote] = useState('')
+  const [recordVideo, setRecordVideo] = useState(() => {
+    try {
+      return localStorage.getItem('cardistry.recordVideo') === '1'
+    } catch {
+      return false
+    }
+  })
   const [videoSize, setVideoSize] = useState({ width: 640, height: 480 })
 
   const [phase, setPhase] = useState<Phase>('idle')
@@ -144,7 +151,7 @@ export default function App() {
       const stream = streamRef.current
       if (!loop || !stream) return setRecState('ready')
       const rec = new Recorder(loop, stream, () => void finishRecording())
-      rec.start(canRecordVideo())
+      rec.start(recordVideo && canRecordVideo())
       recorderRef.current = rec
       setElapsed(0)
       setRecState('recording')
@@ -152,7 +159,7 @@ export default function App() {
     }
     const id = setTimeout(() => setCountdown((c) => c - 1), 1000)
     return () => clearTimeout(id)
-  }, [recState, countdown, finishRecording])
+  }, [recState, countdown, finishRecording, recordVideo])
 
   useEffect(() => {
     if (recState !== 'recording') return
@@ -160,11 +167,16 @@ export default function App() {
     return () => clearInterval(id)
   }, [recState])
 
-  const save = async (d: SaveDetails) => {
+  const save = (d: SaveDetails, again: boolean) => {
     if (!capture) return
-    const frames = capture.frames
+    const frames = d.frames
     const id = crypto.randomUUID()
-    await saveRecording(
+    // Close the sheet straight away and write in the background.
+    setCapture(null)
+    if (again) startRecording()
+    else setRecState('ready')
+    setSavedNote(`Saving ${d.moveName}…`)
+    saveRecording(
       {
         id,
         moveName: d.moveName,
@@ -186,10 +198,11 @@ export default function App() {
       },
       d.keepVideo ? capture.video : null,
     )
-    void requestPersistentStorage()
-    setCapture(null)
-    setRecState('ready')
-    setSavedNote(`Saved ${d.moveName}.`)
+      .then(() => {
+        setSavedNote(`Saved ${d.moveName}.`)
+        void requestPersistentStorage()
+      })
+      .catch((err) => setSavedNote(`Couldn't save: ${err instanceof Error ? err.message : err}`))
   }
 
   const switchTab = (next: Tab) => {
@@ -294,6 +307,24 @@ export default function App() {
               <button className="record" onClick={startRecording} disabled={recState === 'review'}>
                 <span className="rec-dot" /> Record a move
               </button>
+            )}
+            {canRecordVideo() && (
+              <label className="check small">
+                <input
+                  type="checkbox"
+                  checked={recordVideo}
+                  disabled={recState !== 'ready'}
+                  onChange={(e) => {
+                    setRecordVideo(e.target.checked)
+                    try {
+                      localStorage.setItem('cardistry.recordVideo', e.target.checked ? '1' : '0')
+                    } catch {
+                      // Not persisted in private mode.
+                    }
+                  }}
+                />
+                Also record video
+              </label>
             )}
             {savedNote && <span className="saved-note">{savedNote}</span>}
           </div>

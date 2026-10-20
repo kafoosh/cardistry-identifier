@@ -573,3 +573,38 @@ button:disabled {
   max-width: 420px;
   margin: 0 auto;
 }
+
+.record-row {
+  flex-wrap: wrap;
+}
+
+.hand-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hand-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.hand-chip.selected {
+  color: var(--text);
+}
+
+.hand-chip .dot {
+  margin-top: 0;
+  width: 10px;
+  height: 10px;
+}
+
+.hand-chip:not(.selected) .dot {
+  opacity: 0.35;
+}
+
+.sheet-actions {
+  flex-wrap: wrap;
+}
