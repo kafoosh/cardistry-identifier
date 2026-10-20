@@ -8,11 +8,18 @@ import { FEATURE_DIM, HAND_DIM, type FeatureSequence } from './features'
  */
 const NO_CARDS_FACTOR = 1.35
 
-function frameDist(a: Float32Array, i: number, b: Float32Array, j: number, withCards: boolean): number {
+function frameDist(
+  a: Float32Array,
+  i: number,
+  b: Float32Array,
+  j: number,
+  stride: number,
+  dims: number,
+  withCards: boolean,
+): number {
   let s = 0
-  const oa = i * FEATURE_DIM
-  const ob = j * FEATURE_DIM
-  const dims = withCards ? FEATURE_DIM : HAND_DIM
+  const oa = i * stride
+  const ob = j * stride
   for (let d = 0; d < dims; d++) {
     const x = a[oa + d] - b[ob + d]
     s += x * x
@@ -22,55 +29,6 @@ function frameDist(a: Float32Array, i: number, b: Float32Array, j: number, withC
 
 /** Whether two sequences can be compared on cards as well as hands. */
 export const bothHaveCards = (a: FeatureSequence, b: FeatureSequence) => a.hasCards && b.hasCards
-
-/**
- * Dynamic Time Warping distance between two whole sequences, with a
- * Sakoe-Chiba band, normalised by the warping path length so short and
- * long moves compare fairly.
- */
-export function dtw(a: FeatureSequence, b: FeatureSequence, bandRatio = 0.4): number {
-  const n = a.frames
-  const m = b.frames
-  const withCards = bothHaveCards(a, b)
-  const band = Math.max(Math.ceil(Math.max(n, m) * bandRatio), Math.abs(n - m) + 1)
-  let prev = new Float64Array(m).fill(Infinity)
-  let prevLen = new Float64Array(m)
-  let cur = new Float64Array(m)
-  let curLen = new Float64Array(m)
-  for (let i = 0; i < n; i++) {
-    cur.fill(Infinity)
-    const centre = Math.round((i * (m - 1)) / Math.max(1, n - 1))
-    const lo = Math.max(0, centre - band)
-    const hi = Math.min(m - 1, centre + band)
-    for (let j = lo; j <= hi; j++) {
-      const d = frameDist(a.data, i, b.data, j, withCards)
-      if (i === 0 && j === 0) {
-        cur[j] = d
-        curLen[j] = 1
-        continue
-      }
-      let best = Infinity
-      let len = 0
-      if (i > 0 && j > 0 && prev[j - 1] < best) {
-        best = prev[j - 1]
-        len = prevLen[j - 1]
-      }
-      if (i > 0 && prev[j] < best) {
-        best = prev[j]
-        len = prevLen[j]
-      }
-      if (j > 0 && cur[j - 1] < best) {
-        best = cur[j - 1]
-        len = curLen[j - 1]
-      }
-      cur[j] = best + d
-      curLen[j] = len + 1
-    }
-    ;[prev, cur] = [cur, prev]
-    ;[prevLen, curLen] = [curLen, prevLen]
-  }
-  return prev[m - 1] / prevLen[m - 1]
-}
 
 export interface SubsequenceMatch {
   distance: number
@@ -83,7 +41,9 @@ export interface SubsequenceMatch {
  * match must end at the query's last frame but may start anywhere. This is
  * what live identification needs ("did that move just finish?"). Matches
  * spanning less than three quarters or more than 1.8× the template's length are
- * rejected, so a single pose can't match a whole move.
+ * rejected, so a single pose can't match a whole move. Query frames before the
+ * longest allowed span are skipped: they can't be part of an accepted match,
+ * and on a long live window that is most of the work.
  */
 const MIN_SPAN = 0.75
 const MAX_SPAN = 1.8
@@ -91,15 +51,19 @@ export function subsequenceDtw(query: FeatureSequence, template: FeatureSequence
   const n = query.frames
   const m = template.frames
   const withCards = bothHaveCards(query, template)
+  const stride = query.dim ?? FEATURE_DIM
+  if ((template.dim ?? FEATURE_DIM) !== stride) throw new Error('Sequences encoded differently')
+  const dims = withCards ? stride : (query.handDim ?? HAND_DIM)
   let prev = new Float64Array(m)
   let prevLen = new Float64Array(m)
   let prevStart = new Int32Array(m)
   let cur = new Float64Array(m)
   let curLen = new Float64Array(m)
   let curStart = new Int32Array(m)
-  for (let i = 0; i < n; i++) {
+  const first = Math.max(0, n - Math.floor(m * MAX_SPAN))
+  for (let i = first; i < n; i++) {
     for (let j = 0; j < m; j++) {
-      const d = frameDist(query.data, i, template.data, j, withCards)
+      const d = frameDist(query.data, i, template.data, j, stride, dims, withCards)
       if (j === 0) {
         // Free start anywhere in the query.
         cur[0] = d
@@ -110,7 +74,7 @@ export function subsequenceDtw(query: FeatureSequence, template: FeatureSequence
       let best = cur[j - 1]
       let len = curLen[j - 1]
       let start = curStart[j - 1]
-      if (i > 0) {
+      if (i > first) {
         if (prev[j - 1] <= best) {
           best = prev[j - 1]
           len = prevLen[j - 1]

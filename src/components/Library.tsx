@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { sharingEnabled } from '../config'
-import type { SelfTestResult } from '../recognition/recognizer'
+import type { SelfTestResult } from '../recognition/calibration'
 import { getMatcher } from '../recognition/shared'
-import { loadLocalTemplates } from '../recognition/templates'
+import { loadLocalTemplates, loadTemplates } from '../recognition/templates'
 import type { LocalRecording, RecordingSummary } from '../recording/types'
 import { deleteRecording, listRecordings, loadRecording, loadVideo, markShared, renameRecording } from '../storage/db'
 import { ReplayCanvas } from './ReplayCanvas'
@@ -19,7 +19,10 @@ function download(blob: Blob, filename: string) {
 }
 
 function slug(s: string) {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
 }
 
 const fmtDate = (ms: number) =>
@@ -38,19 +41,28 @@ function SelfTestReport({ result }: { result: SelfTestResult }) {
       .filter(([g]) => g !== truth)
       .map(([g, n]) => ({ truth, guess: g, n })),
   )
+  const pct = (n: number) => Math.round((n / result.total) * 100)
   return (
     <div className="self-test small">
       <strong>
-        {result.correct} of {result.total} takes recognised correctly ({Math.round((result.correct / result.total) * 100)}%)
+        {result.correct} of {result.total} takes recognised ({pct(result.correct)}%), {result.wrong} wrong (
+        {pct(result.wrong)}%), {result.unsure} not sure
       </strong>{' '}
-      across {result.testedMoves} move{result.testedMoves === 1 ? '' : 's'}, each checked against all your other takes.
+      across {result.testedMoves} move{result.testedMoves === 1 ? '' : 's'}. Each take is held out and run through
+      Identify against all the other takes, yours and the library's.
       {mistakes.length > 0 && (
         <ul>
-          {mistakes.map((m) => (
-            <li key={`${m.truth}-${m.guess}`}>
-              {m.truth} mistaken for {m.guess} ×{m.n}
-            </li>
-          ))}
+          {mistakes.map((m) =>
+            m.guess === '(not sure)' ? (
+              <li key={`${m.truth}-${m.guess}`}>
+                {m.truth}: not sure ×{m.n}
+              </li>
+            ) : (
+              <li key={`${m.truth}-${m.guess}`}>
+                {m.truth} mistaken for {m.guess} ×{m.n}
+              </li>
+            ),
+          )}
         </ul>
       )}
     </div>
@@ -99,7 +111,8 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
 
   const runSelfTest = async () => {
     setTest('running')
-    const { templates } = await loadLocalTemplates()
+    // The same takes Identify matches against: this device's and the library's.
+    const { templates } = await loadTemplates()
     const matcher = getMatcher()
     setOutliers(new Set(await matcher.setTemplates(templates)))
     setTest(await matcher.selfTest())
@@ -143,14 +156,23 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
   const sharedHidden = hideShared ? (items ?? []).filter((r) => r.sharedId).length : 0
   const groups = useMemo(() => {
     const map = new Map<string, RecordingSummary[]>()
-    for (const r of (items ?? []).filter((r) => !(hideShared && r.sharedId))) map.set(r.moveName, [...(map.get(r.moveName) ?? []), r])
+    for (const r of (items ?? []).filter((r) => !(hideShared && r.sharedId)))
+      map.set(r.moveName, [...(map.get(r.moveName) ?? []), r])
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
   }, [items, hideShared])
 
   const exportAll = async () => {
     const all = await Promise.all((items ?? []).map((r) => loadRecording(r.id)))
-    const payload = { format: 'cardistry-identifier/recordings', version: 1, exportedAt: Date.now(), recordings: all.filter(Boolean) }
-    download(new Blob([JSON.stringify(payload)], { type: 'application/json' }), `cardistry-recordings-${Date.now()}.json`)
+    const payload = {
+      format: 'cardistry-identifier/recordings',
+      version: 1,
+      exportedAt: Date.now(),
+      recordings: all.filter(Boolean),
+    }
+    download(
+      new Blob([JSON.stringify(payload)], { type: 'application/json' }),
+      `cardistry-recordings-${Date.now()}.json`,
+    )
   }
 
   const remove = async (r: RecordingSummary) => {
@@ -226,8 +248,8 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
     <div className="library">
       <div className="library-head">
         <p className="muted small">
-          {items.length} recording{items.length === 1 ? '' : 's'} of {moveCount} move{moveCount === 1 ? '' : 's'}
-          , saved on this device only.
+          {items.length} recording{items.length === 1 ? '' : 's'} of {moveCount} move{moveCount === 1 ? '' : 's'}, saved
+          on this device only.
         </p>
         <div className="controls">
           <button onClick={runSelfTest} disabled={test === 'running'}>
@@ -264,13 +286,16 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
                 <button className="rec-row" onClick={() => toggle(r.id)}>
                   <span>{fmtDate(r.createdAt)}</span>
                   <span className="muted small tabular">
-                    {(r.durationMs / 1000).toFixed(1)}s · {r.cameraView} · {r.camera === 'user' ? 'front cam' : 'rear cam'}{' '}
-                    · {r.device}
+                    {(r.durationMs / 1000).toFixed(1)}s · {r.cameraView} ·{' '}
+                    {r.camera === 'user' ? 'front cam' : 'rear cam'} · {r.device}
                     {r.longestGapMs ? ` · longest drop ${(r.longestGapMs / 1000).toFixed(2)}s` : ''}
                   </span>
                   {r.sharedId && <span className="pill">shared</span>}
                   {outliers.has(r.id) && (
-                    <span className="pill warn" title="This take looks different from your other takes of this move, so it isn't used for recognition.">
+                    <span
+                      className="pill warn"
+                      title="This take looks different from your other takes of this move, so it isn't used for recognition."
+                    >
                       unusual
                     </span>
                   )}
@@ -294,7 +319,11 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
                     )}
                     {renaming?.id === r.id && (
                       <div className="rename">
-                        <MovePicker value={renaming.name} onChange={(name) => setRenaming({ id: r.id, name })} autoFocus />
+                        <MovePicker
+                          value={renaming.name}
+                          onChange={(name) => setRenaming({ id: r.id, name })}
+                          autoFocus
+                        />
                         <button className="primary" onClick={saveRename} disabled={!renaming.name.trim()}>
                           Save
                         </button>
@@ -324,7 +353,11 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
                         <button
                           onClick={async () => {
                             const v = await loadVideo(r.id)
-                            if (v) download(v, `${slug(r.moveName)}-${r.id.slice(0, 8)}.${v.type.includes('mp4') ? 'mp4' : 'webm'}`)
+                            if (v)
+                              download(
+                                v,
+                                `${slug(r.moveName)}-${r.id.slice(0, 8)}.${v.type.includes('mp4') ? 'mp4' : 'webm'}`,
+                              )
                           }}
                         >
                           Download video
