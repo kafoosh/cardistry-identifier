@@ -1,0 +1,45 @@
+name: Wipe shared library
+
+# Manual only. Saves a full database export as a run artifact, then deletes
+# every shared recording (with its data, votes and reports) and every move
+# name people added. The starter move names stay.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type WIPE to delete every shared recording
+        required: true
+
+jobs:
+  wipe:
+    if: inputs.confirm == 'WIPE'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - run: npm ci
+      - run: node scripts/ensure-d1.mjs
+      - name: Count before
+        run: npx wrangler d1 execute DB --remote --command "SELECT (SELECT COUNT(*) FROM recordings) AS recordings, (SELECT COUNT(*) FROM moves) AS moves, (SELECT COUNT(*) FROM moves WHERE created_by IS NOT 'seed') AS added_moves" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Back up
+        run: npx wrangler d1 export DB --remote --output backup.sql
+      - uses: actions/upload-artifact@v4
+        with:
+          name: library-backup
+          path: api/backup.sql
+          retention-days: 90
+      - name: Delete
+        run: |
+          npx wrangler d1 execute DB --remote --command "DELETE FROM votes; DELETE FROM recording_data; DELETE FROM reports; DELETE FROM recordings; DELETE FROM moves WHERE created_by IS NOT 'seed';"
+      - name: Count after
+        run: npx wrangler d1 execute DB --remote --command "SELECT (SELECT COUNT(*) FROM recordings) AS recordings, (SELECT COUNT(*) FROM moves) AS moves" | tee -a "$GITHUB_STEP_SUMMARY"
