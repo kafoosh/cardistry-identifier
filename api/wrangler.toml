@@ -9,6 +9,8 @@ ALLOWED_ORIGINS = "https://kafoosh.github.io,http://localhost:5173,http://localh
 DAILY_UPLOAD_LIMIT = "400"
 # TURNSTILE_SECRET is a secret: `wrangler secret put TURNSTILE_SECRET`.
 # When it's unset (local dev), Turnstile checks are skipped.
+# ADMIN_TOKEN is a secret too: `wrangler secret put ADMIN_TOKEN`. It lets the
+# admin page in; the admin routes are off until it is set.
 
 [[d1_databases]]
 binding = "DB"

@@ -1,4 +1,5 @@
 import { API_BASE } from '../config'
+import { adminToken } from './admin'
 import type { LocalRecording } from '../recording/types'
 import { decodeSequence, encodeSequence, type WireSequence } from '../shared/sequence'
 import type { Frame } from '../tracking/types'
@@ -86,7 +87,8 @@ export const rememberNick = (nickname: string) => storageSet('cardistry.nickname
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: { 'X-Device-Id': deviceId(), ...(init.headers ?? {}) },
+    // The admin token, when this browser has one, lifts the per-move share cap.
+    headers: { 'X-Device-Id': deviceId(), ...(adminToken() ? { 'X-Admin-Token': adminToken() } : {}), ...(init.headers ?? {}) },
   })
   if (!res.ok) {
     let message = `Request failed (${res.status})`

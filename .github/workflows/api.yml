@@ -20,6 +20,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       TURNSTILE_SECRET: ${{ secrets.TURNSTILE_SECRET }}
+      ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - name: Check Cloudflare secrets
@@ -53,6 +54,9 @@ jobs:
       - name: Set Turnstile secret
         if: steps.check.outputs.ready == 'true' && env.TURNSTILE_SECRET != ''
         run: printf '%s' "$TURNSTILE_SECRET" | npx wrangler secret put TURNSTILE_SECRET
+      - name: Set admin token
+        if: steps.check.outputs.ready == 'true' && env.ADMIN_TOKEN != ''
+        run: printf '%s' "$ADMIN_TOKEN" | npx wrangler secret put ADMIN_TOKEN
       - name: Report URL
         if: steps.check.outputs.ready == 'true'
         run: |

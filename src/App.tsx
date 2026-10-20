@@ -10,6 +10,7 @@ import { loadRecordSetup, saveRecordSetup, type RecordSetupValue } from './recor
 import { SaveSheet, type SaveDetails } from './components/SaveSheet'
 import { Hud } from './components/Hud'
 import { IdentifyBoxes, IdentifyStatus } from './components/IdentifyPanel'
+import { Admin } from './components/Admin'
 import { SharedLibrary } from './components/SharedLibrary'
 import { Identifier, type IdentifyState } from './recognition/identifier'
 import { activeSpan } from './recognition/motion'
@@ -39,7 +40,7 @@ import type { CameraFacing, Handedness } from './tracking/types'
 import type { CameraView, DominantHand } from './recording/types'
 
 type Phase = 'idle' | 'loading' | 'live' | 'error'
-type Tab = 'live' | 'library' | 'shared'
+type Tab = 'live' | 'library' | 'shared' | 'admin'
 /** Reads an on/off preference saved with remember(). */
 function readPref(key: string, fallback: boolean): boolean {
   try {
@@ -112,7 +113,8 @@ export default function App() {
   const recorderRef = useRef<Recorder | null>(null)
   const watcherRef = useRef<MotionWatcher | null>(null)
 
-  const [tab, setTab] = useState<Tab>('live')
+  // The admin page has no tab button: open the site with #admin to reach it.
+  const [tab, setTab] = useState<Tab>(() => (window.location.hash === '#admin' ? 'admin' : 'live'))
   const [recState, setRecState] = useState<RecState>('ready')
   const [countdown, setCountdown] = useState(COUNTDOWN_S)
   const [elapsed, setElapsed] = useState(0)
@@ -595,6 +597,12 @@ export default function App() {
       {tab === 'shared' && (
         <main className="library-wrap">
           <SharedLibrary />
+        </main>
+      )}
+
+      {tab === 'admin' && (
+        <main className="library-wrap">
+          <Admin />
         </main>
       )}
 
