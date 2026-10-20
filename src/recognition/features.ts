@@ -66,36 +66,57 @@ export function fillGaps(frames: Frame[]): MaybeHand[][] {
 }
 
 /**
- * Normalises one hand: wrist at the origin, scaled by the wrist to middle
- * knuckle length, rotated so that line points up. Writes 60 values (20
- * points × 3) into out at offset, scaled by weight, and returns the hand's
- * image-plane angle. Which hand it is doesn't matter here: matching tries
- * the mirror image too (see mirrorFeatures).
+ * Normalises one hand into its own 3D frame, so the same finger motion reads
+ * the same from any camera angle: wrist at the origin, scaled by the wrist to
+ * middle knuckle length, turned so that line points up (-y), the line across
+ * the knuckles (pinky to index) lies along x, and z is out of the palm. The
+ * tracker's depth (z, in the same units as x) makes this possible from one
+ * camera. Writes 60 values (20 points × 3) into out at offset, scaled by
+ * weight, and returns the hand's image-plane angle (kept separately: how the
+ * hand is turned to the camera matters for some moves). Which hand it is
+ * doesn't matter here: matching tries the mirror image too (see
+ * mirrorFeatures).
  */
 function normaliseHand(lm: Point3[], aspect: number, out: Float32Array, offset: number, weight: number) {
+  // Scalars throughout: this runs for every hand in every frame of the live window, several times a second.
   const ox = lm[0][0] * aspect
   const oy = lm[0][1]
-  const oz = lm[0][2]
-  const vx = lm[9][0] * aspect - ox
-  const vy = lm[9][1] - oy
-  const scale = Math.hypot(vx, vy) || 1e-3
-  const theta = Math.atan2(vy, vx)
-  // Rotate so (vx, vy) maps to straight up, (0, -1).
-  const phi = -Math.PI / 2 - theta
-  const c = Math.cos(phi)
-  const s = Math.sin(phi)
+  const oz = lm[0][2] * aspect
+  const upx = lm[9][0] * aspect - ox
+  const upy = lm[9][1] - oy
+  const upz = lm[9][2] * aspect - oz
+  const scale = Math.hypot(upx, upy, upz) || 1e-3
+  const ux = upx / scale
+  const uy = upy / scale
+  const uz = upz / scale
+  // Across the knuckles (pinky to index), made square to u.
+  let vx = (lm[5][0] - lm[17][0]) * aspect
+  let vy = lm[5][1] - lm[17][1]
+  let vz = (lm[5][2] - lm[17][2]) * aspect
+  const k = vx * ux + vy * uy + vz * uz
+  vx -= k * ux
+  vy -= k * uy
+  vz -= k * uz
+  const vl = Math.hypot(vx, vy, vz)
+  if (vl > 1e-6) {
+    vx /= vl
+    vy /= vl
+    vz /= vl
+  } else [vx, vy, vz] = [1, 0, 0]
+  const nx = uy * vz - uz * vy
+  const ny = uz * vx - ux * vz
+  const nz = ux * vy - uy * vx
   for (let i = 1; i < 21; i++) {
-    const px = lm[i][0] * aspect - ox
-    const py = lm[i][1] - oy
-    const x = (px * c - py * s) / scale
-    const y = (px * s + py * c) / scale
-    const z = (lm[i][2] - oz) / scale
-    const o = offset + (i - 1) * 3
-    out[o] = x * weight
-    out[o + 1] = y * weight
-    out[o + 2] = z * weight * 0.5
+    const dx = lm[i][0] * aspect - ox
+    const dy = lm[i][1] - oy
+    const dz = lm[i][2] * aspect - oz
+    const at = offset + (i - 1) * 3
+    out[at] = ((dx * vx + dy * vy + dz * vz) / scale) * weight
+    out[at + 1] = (-(dx * ux + dy * uy + dz * uz) / scale) * weight
+    // Depth is the tracker's least certain value, so out-of-palm motion counts half.
+    out[at + 2] = ((dx * nx + dy * ny + dz * nz) / scale) * weight * 0.5
   }
-  return theta
+  return Math.atan2(upy, upx)
 }
 
 /**
@@ -238,8 +259,8 @@ export function mirrorFeatures(seq: FeatureSequence): FeatureSequence {
   const data = new Float32Array(seq.data)
   for (let k = 0; k < seq.frames; k++) {
     const b = k * FEATURE_DIM
-    // Landmark x of both hands.
-    for (let i = 0; i < 40; i++) data[b + i * 3] = -data[b + i * 3]
+    // Landmarks are in each hand's own frame, where a mirror image only turns the palm side over: flip z.
+    for (let i = 0; i < 40; i++) data[b + i * 3 + 2] = -data[b + i * 3 + 2]
     // Orientation angle θ → π − θ: cos flips, sin stays.
     data[b + 120] = -data[b + 120]
     data[b + 122] = -data[b + 122]
