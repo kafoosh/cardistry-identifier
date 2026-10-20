@@ -2,15 +2,12 @@ import type { HandGuess, HandLabel, IdentifyState } from '../recognition/identif
 
 interface StatusProps {
   state: IdentifyState | null
-  templateCount: number
-  moveCount: number
-  sharedCount: number
   sharedError: boolean
   onRecord: () => void
 }
 
-/** One line above the camera: what Identify is doing and what it compares against. */
-export function IdentifyStatus({ state, templateCount, moveCount, sharedCount, sharedError, onRecord }: StatusProps) {
+/** One line above the camera: what Identify is doing. */
+export function IdentifyStatus({ state, sharedError, onRecord }: StatusProps) {
   if (!state) return <p className="identify-status muted small">Loading takes from this device and the library…</p>
   if (state.status === 'no-templates') {
     return (
@@ -30,10 +27,8 @@ export function IdentifyStatus({ state, templateCount, moveCount, sharedCount, s
     <p className="identify-status small muted">
       <span className={`live-dot ${state.status === 'matching' ? 'on' : ''}`} />
       <span className="identify-status-text">
-        {state.status === 'still' ? 'Waiting for a move' : 'Watching'} · {templateCount} take
-        {templateCount === 1 ? '' : 's'} of {moveCount} move{moveCount === 1 ? '' : 's'}
-        {sharedCount ? ` (${sharedCount} from the library)` : ''}
-        {sharedError ? ', library unreachable' : ''}
+        {state.status === 'still' ? 'Waiting for a move' : 'Watching'}
+        {sharedError ? ' · library unreachable' : ''}
       </span>
     </p>
   )

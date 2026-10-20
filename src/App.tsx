@@ -553,9 +553,6 @@ export default function App() {
           {live && mode === 'identify' && (
             <IdentifyStatus
               state={identify}
-              templateCount={templateInfo.templates}
-              moveCount={templateInfo.moves}
-              sharedCount={templateInfo.shared}
               sharedError={templateInfo.sharedError}
               onRecord={() => setMode('record')}
             />
