@@ -251,13 +251,26 @@ export default function App() {
     }
   }, [phase, mode])
 
+  // Remember whether the camera was running when leaving the Camera tab, so
+  // coming back restarts it instead of showing the start screen again.
+  const resumeCameraRef = useRef(false)
+
   const switchTab = (next: Tab) => {
     if (next === tab) return
     if (next !== 'live') {
+      resumeCameraRef.current = phase === 'live'
       stop()
       setPhase('idle')
+    } else if (resumeCameraRef.current) {
+      void start(facing)
     }
     setTab(next)
+  }
+
+  const goRecord = () => {
+    setMode('record')
+    setTab('live')
+    if (phase !== 'live') void start(facing)
   }
 
   const live = phase === 'live'
@@ -290,7 +303,7 @@ export default function App() {
 
       {tab === 'library' && (
         <main className="library-wrap">
-          <Library onRecordMore={() => switchTab('live')} />
+          <Library onRecordMore={goRecord} />
         </main>
       )}
 
@@ -372,6 +385,7 @@ export default function App() {
               moveCount={templateInfo.moves}
               sensitivity={sensitivity}
               onSensitivity={setSensitivity}
+              onRecord={() => setMode('record')}
             />
           )}
           <div className="record-row" hidden={mode !== 'record'}>

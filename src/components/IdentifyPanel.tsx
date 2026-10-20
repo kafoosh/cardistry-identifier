@@ -6,16 +6,22 @@ interface Props {
   moveCount: number
   sensitivity: number
   onSensitivity: (v: number) => void
+  onRecord: () => void
 }
 
 /** Live guesses: the latest confident match, plus the current top 3 with match strength. */
-export function IdentifyPanel({ state, templateCount, moveCount, sensitivity, onSensitivity }: Props) {
+export function IdentifyPanel({ state, templateCount, moveCount, sensitivity, onSensitivity, onRecord }: Props) {
   if (!state) return <p className="muted small">Loading your recordings…</p>
   if (state.status === 'no-templates') {
     return (
-      <p className="hint">
-        Nothing to compare against yet. Record and save a few moves first (about five takes each), then come back here.
-      </p>
+      <div className="identify">
+        <p className="hint">
+          Nothing to compare against yet. Record and save a few moves first (about five takes each), then come back here.
+        </p>
+        <button className="primary" onClick={onRecord}>
+          Record moves
+        </button>
+      </div>
     )
   }
   const recent = state.showLast ? state.last : null
