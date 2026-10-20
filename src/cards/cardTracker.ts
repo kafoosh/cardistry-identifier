@@ -715,13 +715,7 @@ export class CardTracker {
   }
 
   /** The best sideways card shape near a point, from a grid of positions, sizes and tilts snapped onto edges. */
-  private sweep(
-    cx: number,
-    cy: number,
-    bw: number,
-    bh: number,
-    limits: Limits,
-  ) {
+  private sweep(cx: number, cy: number, bw: number, bh: number, limits: Limits) {
     const seeds: { r: Rect; s: number }[] = []
     for (const ox of [-0.15, 0, 0.15]) {
       for (const oy of [-0.15, 0, 0.15]) {
@@ -750,11 +744,7 @@ export class CardTracker {
    * card's long side and as its short side, on either side of the line,
    * and the best fits are refined onto the edges.
    */
-  private edgeFits(
-    near: HandGeo[],
-    expected: number,
-    limits: Limits,
-  ) {
+  private edgeFits(near: HandGeo[], expected: number, limits: Limits) {
     if (!near.length) return []
     const { w, h, gx, gy, norm } = this
     let x0 = Infinity
@@ -1177,7 +1167,13 @@ export class CardTracker {
   }
 
   private normalised(r: Rect): Omit<Packet, 'id' | 'hand'> {
-    const out = { cx: r.cx / this.w, cy: r.cy / this.h, angle: r.angle, length: r.length / this.h, width: r.width / this.h }
+    const out = {
+      cx: r.cx / this.w,
+      cy: r.cy / this.h,
+      angle: r.angle,
+      length: r.length / this.h,
+      width: r.width / this.h,
+    }
     return r.skew ? { ...out, skew: r.skew } : out
   }
 
