@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Library } from './components/Library'
+import { SaveSheet, type SaveDetails } from './components/SaveSheet'
+import { canRecordVideo, describeDevice, longestGapMs, MAX_RECORDING_MS, qualityScore, Recorder, type Capture } from './recording/recorder'
+import { listRecordings, requestPersistentStorage, saveRecording } from './storage/db'
 import { describeCameraError, hasMultipleCameras, openCamera, stopStream } from './tracking/camera'
 import { SLOT_COLOURS } from './tracking/draw'
 import { loadHandTracker, type LoadedTracker } from './tracking/handTracker'
@@ -7,6 +11,10 @@ import { TrackingLoop } from './tracking/trackingLoop'
 import type { CameraFacing, Handedness } from './tracking/types'
 
 type Phase = 'idle' | 'loading' | 'live' | 'error'
+type Tab = 'live' | 'library'
+type RecState = 'ready' | 'countdown' | 'recording' | 'review'
+
+const COUNTDOWN_S = 3
 
 const EMPTY_STATS: TrackingStats = {
   fps: 0,
@@ -18,7 +26,8 @@ const EMPTY_STATS: TrackingStats = {
 
 let trackerPromise: Promise<LoadedTracker> | null = null
 function getTracker() {
-  trackerPromise ??= loadHandTracker().catch((err) => {
+  // `?cpu` in the URL forces the CPU delegate, for devices with a broken GPU path.
+  trackerPromise ??= loadHandTracker(!new URLSearchParams(location.search).has('cpu')).catch((err) => {
     trackerPromise = null
     throw err
   })
@@ -30,6 +39,16 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const loopRef = useRef<TrackingLoop | null>(null)
+  const recorderRef = useRef<Recorder | null>(null)
+
+  const [tab, setTab] = useState<Tab>('live')
+  const [recState, setRecState] = useState<RecState>('ready')
+  const [countdown, setCountdown] = useState(COUNTDOWN_S)
+  const [elapsed, setElapsed] = useState(0)
+  const [capture, setCapture] = useState<Capture | null>(null)
+  const [knownMoves, setKnownMoves] = useState<string[]>([])
+  const [savedNote, setSavedNote] = useState('')
+  const [videoSize, setVideoSize] = useState({ width: 640, height: 480 })
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState('')
@@ -42,6 +61,10 @@ export default function App() {
   const [labels, setLabels] = useState<[Handedness | null, Handedness | null]>([null, null])
 
   const stop = useCallback(() => {
+    recorderRef.current?.cancel()
+    recorderRef.current = null
+    setRecState('ready')
+    setCapture(null)
     loopRef.current?.stop()
     loopRef.current = null
     stopStream(streamRef.current)
@@ -93,6 +116,91 @@ export default function App() {
 
   useEffect(() => stop, [stop])
 
+  const finishRecording = useCallback(async () => {
+    const rec = recorderRef.current
+    if (!rec) return
+    recorderRef.current = null
+    const cap = await rec.stop()
+    const v = videoRef.current
+    if (v?.videoWidth) setVideoSize({ width: v.videoWidth, height: v.videoHeight })
+    setCapture(cap)
+    setRecState('review')
+    listRecordings()
+      .then((all) => setKnownMoves([...new Set(all.map((r) => r.moveName))]))
+      .catch(() => {})
+  }, [])
+
+  const startRecording = useCallback(() => {
+    setSavedNote('')
+    setRecState('countdown')
+    setCountdown(COUNTDOWN_S)
+  }, [])
+
+  // Countdown, then start capturing.
+  useEffect(() => {
+    if (recState !== 'countdown') return
+    if (countdown === 0) {
+      const loop = loopRef.current
+      const stream = streamRef.current
+      if (!loop || !stream) return setRecState('ready')
+      const rec = new Recorder(loop, stream, () => void finishRecording())
+      rec.start(canRecordVideo())
+      recorderRef.current = rec
+      setElapsed(0)
+      setRecState('recording')
+      return
+    }
+    const id = setTimeout(() => setCountdown((c) => c - 1), 1000)
+    return () => clearTimeout(id)
+  }, [recState, countdown, finishRecording])
+
+  useEffect(() => {
+    if (recState !== 'recording') return
+    const id = setInterval(() => setElapsed(recorderRef.current?.elapsedMs ?? 0), 100)
+    return () => clearInterval(id)
+  }, [recState])
+
+  const save = async (d: SaveDetails) => {
+    if (!capture) return
+    const frames = capture.frames
+    const id = crypto.randomUUID()
+    await saveRecording(
+      {
+        id,
+        moveName: d.moveName,
+        createdAt: Date.now(),
+        frames,
+        fps: capture.durationMs > 0 ? ((frames.length - 1) * 1000) / capture.durationMs : 0,
+        frameCount: frames.length,
+        durationMs: capture.durationMs,
+        camera: facing,
+        cameraView: d.cameraView,
+        dominantHand: d.dominantHand,
+        device: describeDevice(),
+        videoWidth: videoSize.width,
+        videoHeight: videoSize.height,
+        qualityScore: qualityScore(frames),
+        longestGapMs: longestGapMs(frames),
+        hasVideo: Boolean(d.keepVideo && capture.video),
+        videoMimeType: capture.video?.type,
+      },
+      d.keepVideo ? capture.video : null,
+    )
+    void requestPersistentStorage()
+    setCapture(null)
+    setRecState('ready')
+    setSavedNote(`Saved ${d.moveName}.`)
+  }
+
+  const switchTab = (next: Tab) => {
+    if (next === tab) return
+    if (next === 'library') {
+      stop()
+      setPhase('idle')
+    }
+    setTab(next)
+  }
+
   const live = phase === 'live'
   const lowFps = live && stats.fps > 0 && stats.fps < 20
   const losingHands = live && stats.fps > 0 && Math.max(stats.presence[0], stats.presence[1]) < 0.6
@@ -101,7 +209,15 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <h1>Cardistry Identifier</h1>
-        {live && (
+        <nav className="tabs">
+          <button className={tab === 'live' ? 'selected' : ''} onClick={() => switchTab('live')}>
+            Camera
+          </button>
+          <button className={tab === 'library' ? 'selected' : ''} onClick={() => switchTab('library')}>
+            My moves
+          </button>
+        </nav>
+        {live && tab === 'live' && (
           <div className="badges">
             <span className={`badge ${lowFps ? 'warn' : ''}`}>{stats.fps.toFixed(0)} fps</span>
             <span className="badge">{stats.inferenceMs.toFixed(0)} ms</span>
@@ -110,7 +226,13 @@ export default function App() {
         )}
       </header>
 
-      <main className="stage-wrap">
+      {tab === 'library' && (
+        <main className="library-wrap">
+          <Library onRecordMore={() => switchTab('live')} />
+        </main>
+      )}
+
+      <main className="stage-wrap" hidden={tab !== 'live'}>
         <div className={`stage ${live ? 'is-live' : ''}`}>
           <video
             ref={videoRef}
@@ -120,6 +242,12 @@ export default function App() {
             autoPlay
           />
           <canvas ref={canvasRef} className={mirror ? 'mirror' : ''} />
+          {live && recState === 'countdown' && <div className="countdown">{countdown}</div>}
+          {live && recState === 'recording' && (
+            <div className="rec-indicator">
+              <span className="rec-dot" /> REC {(elapsed / 1000).toFixed(1)}s / {MAX_RECORDING_MS / 1000}s
+            </div>
+          )}
           {live && showGuide && (
             <div className="guide" aria-hidden="true">
               <span>Keep both hands and the deck inside the frame</span>
@@ -151,8 +279,24 @@ export default function App() {
         </div>
       </main>
 
-      {live && (
+      {live && tab === 'live' && (
         <section className="panel">
+          <div className="record-row">
+            {recState === 'recording' ? (
+              <button className="record is-recording" onClick={() => void finishRecording()}>
+                Stop recording
+              </button>
+            ) : recState === 'countdown' ? (
+              <button className="record" onClick={() => setRecState('ready')}>
+                Cancel
+              </button>
+            ) : (
+              <button className="record" onClick={startRecording} disabled={recState === 'review'}>
+                <span className="rec-dot" /> Record a move
+              </button>
+            )}
+            {savedNote && <span className="saved-note">{savedNote}</span>}
+          </div>
           <div className="hands">
             {[0, 1].map((slot) => (
               <div className="hand" key={slot}>
@@ -194,6 +338,21 @@ export default function App() {
             </button>
           </div>
         </section>
+      )}
+
+      {capture && recState === 'review' && (
+        <SaveSheet
+          capture={capture}
+          width={videoSize.width}
+          height={videoSize.height}
+          mirror={mirror}
+          knownMoves={knownMoves}
+          onSave={save}
+          onDiscard={() => {
+            setCapture(null)
+            setRecState('ready')
+          }}
+        />
       )}
     </div>
   )
