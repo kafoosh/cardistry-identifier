@@ -9,7 +9,7 @@ See [docs/build-plan.md](docs/build-plan.md) for the full roadmap: live wirefram
 - [x] **Milestone 1: live wireframe.** Camera on phone or laptop (front/rear switch), two-hand tracking with a GPU-to-CPU fallback, wireframe overlay, fps and inference time, and per-hand tracking quality (share of frames each hand was seen, confidence, and dropouts over the last 5 s) to measure how much the cards hide the hands.
 - [x] **Milestone 2: record and save locally.** Record button with a 3 s countdown and a 10 s cap, landmark capture plus an optional video clip, a save sheet to name the move (starter moves or a new one), camera angle and dominant hand, and a "My moves" library (IndexedDB) with wireframe replay at 1×, 0.5× and 0.25×, rename, delete, and JSON/video export. Each recording shows how much of it had hands tracked and its longest dropout.
 - [x] **Milestone 3: shared library.** A Cloudflare Worker API (`api/`) with D1: share a recording's landmarks (never video), browse moves, replay anyone's recordings, and delete your own with a delete key kept in your browser. No accounts: an anonymous device id, Turnstile on uploads, per-device and per-IP daily limits, and server-side validation of every sequence. New move names become `proposed` moves.
-- [ ] Milestone 4: recognise moves (DTW)
+- [x] **Milestone 4: recognise moves (DTW).** Preprocessing (gap filling, wrist-centred and palm-scaled hands rotated upright, left hands mirrored onto right, hands ordered by activity, resampled to 15 fps). An **Identify** mode matches the last few seconds live against your saved recordings with subsequence DTW in a Web Worker, gated on hand motion, showing the top 3 with a sensitivity slider. **Test recognition** in My moves runs a leave-one-out check over your takes, shows which moves get confused, and sets the match threshold from your data.
 
 ## Run locally
 
@@ -26,6 +26,7 @@ Open the printed URL. Camera access needs `localhost` or HTTPS; to try it on a p
 - `src/tracking/trackingLoop.ts` runs detection on every new video frame, outside React.
 - `src/tracking/handIdentity.ts` keeps each hand in a stable slot (A/B) by position, because MediaPipe's left/right label can swap when hands overlap.
 - `src/recording/recorder.ts` captures frames from the loop (and a `MediaRecorder` clip); `src/storage/db.ts` keeps summaries, frames and videos in separate IndexedDB stores so listing stays fast.
+- `src/recognition/` holds feature extraction (`features.ts`), DTW and subsequence DTW (`dtw.ts`), ranking and the self-test (`recognizer.ts`), and the live loop (`identifier.ts`); matching runs in `matcher.worker.ts`.
 - Add `?cpu` to the URL to force the CPU delegate if the GPU path misbehaves on a device.
 - Landmarks are always stored in raw camera coordinates. The front-camera preview is mirrored with CSS only.
 

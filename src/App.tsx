@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Library } from './components/Library'
 import { SaveSheet, type SaveDetails } from './components/SaveSheet'
+import { IdentifyPanel } from './components/IdentifyPanel'
 import { SharedLibrary } from './components/SharedLibrary'
+import { Identifier, type IdentifyState } from './recognition/identifier'
+import { getMatcher } from './recognition/shared'
+import { loadLocalTemplates } from './recognition/templates'
 import { canRecordVideo, describeDevice, longestGapMs, MAX_RECORDING_MS, qualityScore, Recorder, type Capture } from './recording/recorder'
 import { listRecordings, requestPersistentStorage, saveRecording } from './storage/db'
 import { describeCameraError, hasMultipleCameras, openCamera, stopStream } from './tracking/camera'
@@ -14,6 +18,7 @@ import type { CameraFacing, Handedness } from './tracking/types'
 type Phase = 'idle' | 'loading' | 'live' | 'error'
 type Tab = 'live' | 'library' | 'shared'
 type RecState = 'ready' | 'countdown' | 'recording' | 'review'
+type Mode = 'record' | 'identify'
 
 const COUNTDOWN_S = 3
 
@@ -56,6 +61,14 @@ export default function App() {
       return false
     }
   })
+  const [mode, setMode] = useState<Mode>('record')
+  const [identify, setIdentify] = useState<IdentifyState | null>(null)
+  const [templateInfo, setTemplateInfo] = useState({ templates: 0, moves: 0 })
+  const [sensitivity, setSensitivity] = useState(1)
+  const thresholdRef = useRef({ base: 1, sensitivity: 1 })
+  useEffect(() => {
+    thresholdRef.current.sensitivity = sensitivity
+  }, [sensitivity])
   const [videoSize, setVideoSize] = useState({ width: 640, height: 480 })
 
   const [phase, setPhase] = useState<Phase>('idle')
@@ -206,6 +219,38 @@ export default function App() {
       .catch((err) => setSavedNote(`Couldn't save: ${err instanceof Error ? err.message : err}`))
   }
 
+  // Identify mode: load templates, estimate a threshold, then match live.
+  useEffect(() => {
+    if (phase !== 'live' || mode !== 'identify' || !loopRef.current) return
+    let identifier: Identifier | null = null
+    let cancelled = false
+    setIdentify(null)
+    void (async () => {
+      const templates = await loadLocalTemplates()
+      if (cancelled || !loopRef.current) return
+      const matcher = getMatcher()
+      matcher.setTemplates(templates)
+      setTemplateInfo({ templates: templates.length, moves: new Set(templates.map((t) => t.moveName)).size })
+      thresholdRef.current.base = (await matcher.selfTest()).threshold
+      if (cancelled || !loopRef.current) return
+      identifier = new Identifier(
+        loopRef.current,
+        matcher,
+        templates,
+        () => {
+          const v = videoRef.current
+          return v?.videoWidth ? v.videoWidth / v.videoHeight : 4 / 3
+        },
+        () => thresholdRef.current.base * thresholdRef.current.sensitivity,
+        setIdentify,
+      )
+    })()
+    return () => {
+      cancelled = true
+      identifier?.stop()
+    }
+  }, [phase, mode])
+
   const switchTab = (next: Tab) => {
     if (next === tab) return
     if (next !== 'live') {
@@ -304,7 +349,32 @@ export default function App() {
 
       {live && tab === 'live' && (
         <section className="panel">
-          <div className="record-row">
+          <div className="mode-switch" role="tablist">
+            <button
+              className={mode === 'record' ? 'selected' : ''}
+              onClick={() => setMode('record')}
+              disabled={recState !== 'ready'}
+            >
+              Record
+            </button>
+            <button
+              className={mode === 'identify' ? 'selected' : ''}
+              onClick={() => setMode('identify')}
+              disabled={recState !== 'ready'}
+            >
+              Identify
+            </button>
+          </div>
+          {mode === 'identify' && (
+            <IdentifyPanel
+              state={identify}
+              templateCount={templateInfo.templates}
+              moveCount={templateInfo.moves}
+              sensitivity={sensitivity}
+              onSensitivity={setSensitivity}
+            />
+          )}
+          <div className="record-row" hidden={mode !== 'record'}>
             {recState === 'recording' ? (
               <button className="record is-recording" onClick={() => void finishRecording()}>
                 Stop recording

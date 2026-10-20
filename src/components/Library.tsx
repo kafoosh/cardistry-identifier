@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { sharingEnabled } from '../config'
+import type { SelfTestResult } from '../recognition/recognizer'
+import { getMatcher } from '../recognition/shared'
+import { loadLocalTemplates } from '../recognition/templates'
 import type { LocalRecording, RecordingSummary } from '../recording/types'
 import { deleteRecording, listRecordings, loadRecording, loadVideo, markShared, renameRecording } from '../storage/db'
 import { ReplayCanvas } from './ReplayCanvas'
@@ -21,6 +24,38 @@ function slug(s: string) {
 const fmtDate = (ms: number) =>
   new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
+function SelfTestReport({ result }: { result: SelfTestResult }) {
+  if (!result.total) {
+    return (
+      <div className="self-test small">
+        Record at least two takes of a move to test recognition. Each take is checked against all the others.
+      </div>
+    )
+  }
+  const mistakes = Object.entries(result.confusion).flatMap(([truth, guesses]) =>
+    Object.entries(guesses)
+      .filter(([g]) => g !== truth)
+      .map(([g, n]) => ({ truth, guess: g, n })),
+  )
+  return (
+    <div className="self-test small">
+      <strong>
+        {result.correct} of {result.total} takes recognised correctly ({Math.round((result.correct / result.total) * 100)}%)
+      </strong>{' '}
+      across {result.testedMoves} move{result.testedMoves === 1 ? '' : 's'}, each checked against all your other takes.
+      {mistakes.length > 0 && (
+        <ul>
+          {mistakes.map((m) => (
+            <li key={`${m.truth}-${m.guess}`}>
+              {m.truth} mistaken for {m.guess} ×{m.n}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 /** Recordings saved on this device, grouped by move, with replay, rename, delete and export. */
 export function Library({ onRecordMore }: { onRecordMore: () => void }) {
   const [items, setItems] = useState<RecordingSummary[] | null>(null)
@@ -30,6 +65,15 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
   const [error, setError] = useState('')
   const [sharing, setSharing] = useState<LocalRecording | null>(null)
   const [note, setNote] = useState('')
+  const [test, setTest] = useState<SelfTestResult | 'running' | null>(null)
+
+  const runSelfTest = async () => {
+    setTest('running')
+    const templates = await loadLocalTemplates()
+    const matcher = getMatcher()
+    matcher.setTemplates(templates)
+    setTest(await matcher.selfTest())
+  }
 
   const refresh = () =>
     listRecordings()
@@ -117,8 +161,14 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
           {items.length} recording{items.length === 1 ? '' : 's'} of {groups.length} move{groups.length === 1 ? '' : 's'}
           , saved on this device only.
         </p>
-        <button onClick={exportAll}>Export all (JSON)</button>
+        <div className="controls">
+          <button onClick={runSelfTest} disabled={test === 'running'}>
+            {test === 'running' ? 'Testing…' : 'Test recognition'}
+          </button>
+          <button onClick={exportAll}>Export all (JSON)</button>
+        </div>
       </div>
+      {test && test !== 'running' && <SelfTestReport result={test} />}
       {note && <p className="saved-note">{note}</p>}
 
       {groups.map(([move, recs]) => (

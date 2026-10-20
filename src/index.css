@@ -641,3 +641,96 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 10px;
 }
+
+.mode-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.mode-switch button {
+  border: 0;
+  border-radius: 0;
+  min-height: 38px;
+}
+
+.mode-switch button.selected {
+  background: var(--accent);
+  color: #062925;
+}
+
+.identify {
+  margin-bottom: 10px;
+}
+
+.guess {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 56px;
+  justify-content: center;
+}
+
+.guess strong {
+  font-size: 1.6rem;
+  color: var(--accent);
+}
+
+.scores {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scores li {
+  display: grid;
+  grid-template-columns: minmax(90px, 160px) 1fr 44px;
+  align-items: center;
+  gap: 10px;
+}
+
+.score-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s;
+}
+
+.slider input {
+  padding: 0;
+  min-height: 0;
+  accent-color: var(--accent);
+  border: 0;
+  background: none;
+}
+
+.self-test {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+
+.self-test ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
