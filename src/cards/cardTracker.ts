@@ -22,6 +22,8 @@ const EDGE_RATIO = 0.2
 const MIN_EDGE_RATIO = 0.1
 /** Edge score an edge-on packet needs. */
 const EDGE_SCORE = 0.22
+/** A blob at least this elongated may be a packet seen edge-on even when it also fits a face. */
+const THIN_BLOB = 0.45
 /**
  * A card tilted towards or away from the camera: its long sides look shorter, so it looks squarer,
  * and its short sides lean (radians off square). Seeds try this lean at this squareness.
@@ -1230,6 +1232,9 @@ export class CardTracker {
       if (fit && fit.score >= DETECT_SCORE) fits.push(fit)
       // Maybe a packet seen edge-on: a thin white side. Thin shapes sit on edges more easily (a
       // finger, a shelf, a card's own border), so the fit has to be clearer.
+      // A squarer blob that already fits a face is that face.
+      const thin = Math.min(rect.width, rect.length) <= Math.max(rect.width, rect.length) * THIN_BLOB
+      if (!thin && fit && fit.score >= DETECT_SCORE) continue
       const edge = this.fitCard(rect, edgeLimits)
       if (edge && edge.score >= EDGE_SCORE) fits.push({ ...edge, thin: true })
     }
