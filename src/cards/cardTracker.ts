@@ -5,7 +5,9 @@ import type { Packet } from './types'
 /** Working resolution (long side). Keeps a frame to a few ms while a packet still spans dozens of pixels. */
 const WORK_W = 256
 /** A packet further than this (in deck lengths) from every tracked hand isn't one being handled. */
-const MAX_HAND_DIST = 1.3
+const MAX_HAND_DIST = 1.0
+/** Frames the last tracked hands count for after the hand tracker loses them (a hand under a deck often drops out). */
+const HAND_MEMORY = 30
 const MAX_PACKETS = 3
 /** Frames the deck must be held still in the guide before its size is learned. */
 const HOLD_FRAMES = 20
@@ -94,6 +96,8 @@ export class CardTracker {
   private white = new Uint8Array(0)
   private tracks: Track[] = []
   private nextId = 1
+  private lastGeo: HandGeo[] = []
+  private lastGeoAge = Infinity
   private deck: DeckModel | null = null
   private calibrating = false
   private stable = 0
@@ -543,6 +547,12 @@ export class CardTracker {
       return []
     }
     const { w, h } = this
+    // Hands the tracker just lost still say where the cards are; a shelf across the room never gets close.
+    if (geo.length) {
+      this.lastGeo = geo
+      this.lastGeoAge = 0
+    } else this.lastGeoAge++
+    const near = geo.length ? geo : this.lastGeoAge <= HAND_MEMORY ? this.lastGeo : []
     // Expected long side: as calibrated. (Hand size would follow the deck towards and away from the
     // camera, but the tracker's hand sizes swing too much when fingers are hidden.)
     const expected = deck.length * h
@@ -577,9 +587,9 @@ export class CardTracker {
       if (best) {
         used.add(best.id)
         next.push({ ...smooth(best, f), id: best.id, misses: 0 })
-      } else if (geo.length) next.push({ ...f, id: this.nextId++, misses: 0 })
-      // With no hand in view, only packets already being followed carry on (the hand tracker drops the
-      // hand under a deck for a few frames); nothing new starts, so a shelf can't become a packet.
+      } else if (near.length) next.push({ ...f, id: this.nextId++, misses: 0 })
+      // With no hand seen for a while, only packets already being followed carry on; nothing new
+      // starts, so a shelf can't become a packet.
     }
     for (const t of this.tracks) {
       if (used.has(t.id) || t.misses >= 2) continue
@@ -592,18 +602,18 @@ export class CardTracker {
     for (const t of this.tracks) {
       let hand: 0 | 1 | null = null
       let bestD = Infinity
-      for (const g of geo) {
+      for (const g of near) {
         for (const [x, y] of g.pts) {
           const d = Math.hypot(x - t.cx, y - t.cy)
           if (d < bestD) {
             bestD = d
-            hand = g.slot
+            hand = geo.length ? g.slot : null
           }
         }
       }
-      // A card shape away from every tracked hand isn't a packet being handled (a picture frame, a sheet
-      // of paper). With no hand tracked at all, the packet is kept but belongs to no hand.
-      if (geo.length && bestD > expected * MAX_HAND_DIST) continue
+      // A card shape away from every hand isn't a packet being handled (a picture frame, a sheet of
+      // paper). With no hand seen for a while, the packet is kept but belongs to no hand.
+      if (near.length && bestD > expected * MAX_HAND_DIST) continue
       out.push({ id: t.id, ...this.normalised(t), hand })
     }
     return out
