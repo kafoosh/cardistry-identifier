@@ -22,6 +22,10 @@ const MIN_AREA = 0.15
 const MAX_AREA = 6
 /** How much of a blob's fitted rectangle must be blob (a back's white border with a patterned middle is a ring). */
 const MIN_FILL = 0.15
+/** How far from neutral a bright pixel may be and still count as white: skin, wood and painted walls are tinted more. */
+const WHITE_SAT = 0.15
+/** A light's tint can be taken off by at most this much per channel; a stronger cast is a coloured object, not the light. */
+const MAX_GAIN = 1.3
 /** Straight edges: direction bins over 180° and offset bins (px) for finding card sides; a side must be this share of the deck's length. */
 const SEG_ANGLES = 36
 const SEG_RHO = 3
@@ -134,6 +138,10 @@ export class CardTracker {
   private gy = new Float32Array(0)
   /** Strong-edge level of the current frame, so scores don't depend on lighting or contrast. */
   private norm = 1
+  private whiteLevel = 90
+  /** Per-channel gains applied before the white test: the deck's learned tint (see DeckModel.tint). */
+  private gains: [number, number, number] = [1, 1, 1]
+  private lastPx: Uint8ClampedArray | null = null
   /** 1 where a pixel is white-ish (bright and unsaturated). */
   private white = new Uint8Array(0)
   /** How many processed frames in a row each pixel has been a strong edge (capped). */
@@ -166,6 +174,7 @@ export class CardTracker {
 
   constructor(deck: DeckModel | null = null) {
     this.deck = deck
+    if (deck?.tint) this.gains = deck.tint
   }
 
   /** Whether a deck has been learned, so packets can be tracked. */
@@ -189,6 +198,8 @@ export class CardTracker {
     this.lastHolder = null
     this.searching = 0
     this.tracks = []
+    // The light may have changed since the last deck was learned.
+    this.gains = [1, 1, 1]
     this.calibration = { phase: 'waiting', progress: 0, hint: 'Hold your deck sideways in the box, back to the camera' }
   }
 
@@ -261,16 +272,9 @@ export class CardTracker {
     const bright = new Float32Array(Math.ceil(n / 16))
     for (let i = 0, k = 0; i < n; i += 16) bright[k++] = grey[i]
     bright.sort()
-    const whiteLevel = Math.max(90, bright[Math.floor(bright.length * 0.97)] * 0.72)
-    for (let i = 0; i < n; i++) {
-      const r = px[i * 4]
-      const g = px[i * 4 + 1]
-      const b = px[i * 4 + 2]
-      const lo = Math.min(r, g, b)
-      const hi = Math.max(r, g, b)
-      // Cards are neutral; skin, wood and painted walls carry a tint even when bright.
-      this.white[i] = lo > whiteLevel && hi - lo < hi * 0.15 ? 1 : 0
-    }
+    this.whiteLevel = Math.max(90, bright[Math.floor(bright.length * 0.97)] * 0.72)
+    this.lastPx = px
+    this.whiteMask()
     const { gx, gy } = this
     const mags: number[] = []
     for (let y = 1; y < h - 1; y++) {
@@ -299,6 +303,84 @@ export class CardTracker {
         if (age[i] < 255) age[i]++
       } else age[i] = 0
     }
+  }
+
+  /** Which pixels are white: bright, and neutral once the learned light tint is taken off. */
+  private whiteMask() {
+    const px = this.lastPx
+    if (!px) return
+    const n = this.w * this.h
+    const [kr, kg, kb] = this.gains
+    const whiteLevel = this.whiteLevel
+    for (let i = 0; i < n; i++) {
+      const r = px[i * 4] * kr
+      const g = px[i * 4 + 1] * kg
+      const b = px[i * 4 + 2] * kb
+      const lo = Math.min(r, g, b)
+      const hi = Math.max(r, g, b)
+      // Cards are neutral; skin, wood and painted walls carry a tint even when bright.
+      this.white[i] = lo > whiteLevel && hi - lo < hi * WHITE_SAT ? 1 : 0
+    }
+  }
+
+  /**
+   * The colour of the light, read off a card's border: the mean of the
+   * bright, not-too-tinted pixels just inside the rectangle's edges, as
+   * gains that would make it neutral. Null when too few pixels qualify.
+   */
+  private rimTint(r: Rect): [number, number, number] | null {
+    const px = this.lastPx
+    if (!px) return null
+    const { w, h } = this
+    const ux = Math.cos(r.angle)
+    const uy = Math.sin(r.angle)
+    const vx = -uy
+    const vy = ux
+    const inset = Math.max(1.5, Math.min(r.length, r.width) * 0.06)
+    let sr = 0
+    let sg = 0
+    let sb = 0
+    let n = 0
+    const walk = (ox: number, oy: number, dx: number, dy: number, len: number) => {
+      const steps = Math.max(6, Math.round(len / 2))
+      for (let k = 0; k < steps; k++) {
+        const t = (0.05 + (0.9 * (k + 0.5)) / steps) * len
+        const x = Math.round(ox + dx * t)
+        const y = Math.round(oy + dy * t)
+        if (x < 0 || y < 0 || x >= w || y >= h) continue
+        const i = (y * w + x) * 4
+        const cr = px[i]
+        const cg = px[i + 1]
+        const cb = px[i + 2]
+        const lo = Math.min(cr, cg, cb)
+        const hi = Math.max(cr, cg, cb)
+        if (lo < this.whiteLevel * 0.7 || hi - lo > hi * 0.35) continue
+        sr += cr
+        sg += cg
+        sb += cb
+        n++
+      }
+    }
+    for (const sign of [-1, 1]) {
+      walk(
+        r.cx + vx * sign * (r.width / 2 - inset) - ux * (r.length / 2),
+        r.cy + vy * sign * (r.width / 2 - inset) - uy * (r.length / 2),
+        ux,
+        uy,
+        r.length,
+      )
+      walk(
+        r.cx + ux * sign * (r.length / 2 - inset) - vx * (r.width / 2),
+        r.cy + uy * sign * (r.length / 2 - inset) - vy * (r.width / 2),
+        vx,
+        vy,
+        r.width,
+      )
+    }
+    if (n < 12) return null
+    const mean = (sr + sg + sb) / (3 * n)
+    const gain = (sum: number) => Math.min(MAX_GAIN, Math.max(1 / MAX_GAIN, (mean * n) / Math.max(1, sum)))
+    return [gain(sr), gain(sg), gain(sb)]
   }
 
   /** The share of a rectangle's edge pixels that have been edges for a long time (furniture, shelves, drawers). */
@@ -570,6 +652,35 @@ export class CardTracker {
     return best
   }
 
+  /** The best sideways card shape near a point, from a grid of positions, sizes and tilts snapped onto edges. */
+  private sweep(
+    cx: number,
+    cy: number,
+    bw: number,
+    bh: number,
+    limits: { minLen: number; maxLen: number; minRatio: number; maxRatio: number },
+  ) {
+    const seeds: { r: Rect; s: number }[] = []
+    for (const ox of [-0.15, 0, 0.15]) {
+      for (const oy of [-0.15, 0, 0.15]) {
+        for (let a = -0.5; a <= 0.5; a += 0.17) {
+          for (const sl of [0.5, 0.65, 0.8]) {
+            const length = Math.min(limits.maxLen, Math.max(limits.minLen, bw * sl))
+            const r = { cx: cx + ox * bw, cy: cy + oy * bh, angle: a, length, width: length * CARD_ASPECT }
+            seeds.push({ r, s: this.score(r) })
+          }
+        }
+      }
+    }
+    seeds.sort((p, q) => q.s - p.s)
+    let best: { rect: Rect; score: number } | null = null
+    for (const seed of seeds.slice(0, 4)) {
+      const fit = this.refine(seed.r, limits)
+      if (!best || fit.score > best.score) best = fit
+    }
+    return best
+  }
+
   /**
    * Card-shaped rectangles seeded from straight edges near the hands, for
    * backs with no white border (which the white mask misses). Edge pixels
@@ -732,6 +843,27 @@ export class CardTracker {
       bestScore = fit.score
       found = fit.rect
     }
+    // Nothing solid and white to start from (the border is thin and partly
+    // under the fingers, or the sofa behind is as pale as the border): sweep
+    // card shapes over the middle of the box and snap them onto edges.
+    if (!found) {
+      let fit = this.sweep(bcx, bcy, bw, bh, limits)
+      // A likely card whose border isn't reading as white: under a warm or
+      // cool light the border is tinted along with everything else. Learn the
+      // tint from the border itself, take it off, and look again.
+      if (fit && fit.score < DETECT_SCORE && fit.score >= DETECT_SCORE * 0.4) {
+        const tint = this.rimTint(fit.rect)
+        if (tint && tint.some((g) => Math.abs(g - 1) > 0.03)) {
+          this.gains = tint
+          this.whiteMask()
+          fit = this.sweep(bcx, bcy, bw, bh, limits)
+        }
+      }
+      if (fit && fit.score >= DETECT_SCORE) {
+        bestScore = fit.score
+        found = fit.rect
+      }
+    }
     const prev = this.lastFit
     const steady =
       found &&
@@ -756,7 +888,11 @@ export class CardTracker {
     }
     if (!found || this.stable < HOLD_FRAMES) return
 
-    this.deck = { length: found.length / h, lengthHands: holder ? found.length / holder.size : 0 }
+    this.deck = {
+      length: found.length / h,
+      lengthHands: holder ? found.length / holder.size : 0,
+      tint: this.gains.some((g) => g !== 1) ? this.gains : undefined,
+    }
     saveDeck(this.deck)
     this.calibrating = false
     this.calibration = {

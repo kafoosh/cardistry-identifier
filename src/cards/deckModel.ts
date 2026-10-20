@@ -9,6 +9,12 @@ export interface DeckModel {
   length: number
   /** The long side in hand sizes (wrist to middle knuckle) at calibration, or 0 when no hand was tracked. */
   lengthHands: number
+  /**
+   * Per-channel gains that make the deck's white border neutral under the
+   * light it was calibrated in (a warm lamp tints it cream). Absent or all 1
+   * under neutral light.
+   */
+  tint?: [number, number, number]
 }
 
 /** A standard poker card is 63 × 88 mm: short side over long side. */
@@ -31,7 +37,11 @@ export function loadDeck(): DeckModel | null {
     const v = JSON.parse(raw) as Partial<DeckModel>
     if (!(typeof v.length === 'number' && v.length > 0 && typeof v.lengthHands === 'number' && v.lengthHands >= 0))
       return null
-    return { length: v.length, lengthHands: v.lengthHands }
+    const tint =
+      Array.isArray(v.tint) && v.tint.length === 3 && v.tint.every((g) => typeof g === 'number' && g > 0.5 && g < 2)
+        ? (v.tint as [number, number, number])
+        : undefined
+    return { length: v.length, lengthHands: v.lengthHands, tint }
   } catch {
     return null
   }
