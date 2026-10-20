@@ -42,7 +42,7 @@ export function drawHands(ctx: CanvasRenderingContext2D, hands: TrackedHand[]) {
   }
 }
 
-/** Card packets as rotated boxes in the colour of the hand holding them (white when loose). */
+/** Card packets as rotated boxes (slanted when tilted) in the colour of the hand holding them (white when loose). */
 export function drawCards(ctx: CanvasRenderingContext2D, packets: Packet[]) {
   const { width: w, height: h } = ctx.canvas
   const unit = Math.max(w, h) / 640
@@ -51,15 +51,22 @@ export function drawCards(ctx: CanvasRenderingContext2D, packets: Packet[]) {
     const cy = p.cy * h
     const hl = (p.length * h) / 2
     const hw = (p.width * h) / 2
-    const c = Math.cos(p.angle)
-    const s = Math.sin(p.angle)
+    // Half the long side along the packet's angle, half the short side across it (leaning by the skew).
+    const lx = Math.cos(p.angle) * hl
+    const ly = Math.sin(p.angle) * hl
+    const wx = -Math.sin(p.angle + (p.skew ?? 0)) * hw
+    const wy = Math.cos(p.angle + (p.skew ?? 0)) * hw
     ctx.save()
-    ctx.translate(cx, cy)
-    ctx.rotate(Math.atan2(s, c))
     ctx.strokeStyle = p.hand === null ? '#ffffff' : SLOT_COLOURS[p.hand]
     ctx.lineWidth = 2 * unit
     ctx.setLineDash([6 * unit, 4 * unit])
-    ctx.strokeRect(-hl, -hw, hl * 2, hw * 2)
+    ctx.beginPath()
+    ctx.moveTo(cx - lx - wx, cy - ly - wy)
+    ctx.lineTo(cx + lx - wx, cy + ly - wy)
+    ctx.lineTo(cx + lx + wx, cy + ly + wy)
+    ctx.lineTo(cx - lx + wx, cy - ly + wy)
+    ctx.closePath()
+    ctx.stroke()
     ctx.restore()
   }
 }

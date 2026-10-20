@@ -13,6 +13,11 @@ export interface Packet {
   /** Long and short side, as a share of the frame height. */
   length: number
   width: number
+  /**
+   * How far the short sides lean off square, in radians, when the packet is tilted towards or away
+   * from the camera (its face then looks like a parallelogram). Absent when square.
+   */
+  skew?: number
   /** Which hand slot holds it (nearest hand), or null when it isn't near either. */
   hand: 0 | 1 | null
 }

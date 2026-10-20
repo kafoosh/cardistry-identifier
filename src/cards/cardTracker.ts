@@ -17,6 +17,14 @@ const KEEP_SCORE = 0.1
 /** Short side over long side: face-on is the card's own proportions, tilted packets look thinner. */
 const MIN_RATIO = 0.3
 const MAX_RATIO = CARD_ASPECT * 1.15
+/**
+ * A card tilted towards or away from the camera: its long sides look shorter, so it looks squarer,
+ * and its short sides lean (radians off square). Seeds try this lean at this squareness.
+ */
+const TILT_MAX_RATIO = 1
+const MAX_SKEW = 0.6
+const TILT_SEED = 0.45
+const TILT_RATIO = 0.85
 /** Blob area limits relative to the deck's face (fingers hide some; a stack's side, a fan or a finger can join a blob). */
 const MIN_AREA = 0.15
 const MAX_AREA = 6
@@ -98,13 +106,27 @@ interface HandGeo {
   size: number
 }
 
-/** A rectangle in working-frame pixels; angle is the long side's direction. */
+/**
+ * A card's outline in working-frame pixels; angle is the long side's direction. A card tilted
+ * towards or away from the camera looks slanted, so the short sides may lean by skew radians off
+ * square (a parallelogram, which is what a small tilted card looks like).
+ */
 interface Rect {
   cx: number
   cy: number
   angle: number
   length: number
   width: number
+  skew?: number
+}
+
+/** What a fitted outline may look like: long side in pixels, short over long side, and lean. */
+interface Limits {
+  minLen: number
+  maxLen: number
+  minRatio: number
+  maxRatio: number
+  maxSkew: number
 }
 
 interface Track extends Rect {
@@ -367,10 +389,7 @@ export class CardTracker {
     const px = this.lastPx
     if (!px) return null
     const { w, h } = this
-    const ux = Math.cos(r.angle)
-    const uy = Math.sin(r.angle)
-    const vx = -uy
-    const vy = ux
+    const { ux, uy, vx, vy } = axes(r)
     const inset = Math.max(1.5, Math.min(r.length, r.width) * 0.06)
     let sr = 0
     let sg = 0
@@ -421,10 +440,7 @@ export class CardTracker {
   /** The share of a rectangle's edge pixels that have been edges for a long time (furniture, shelves, drawers). */
   private staleness(r: Rect): number {
     const { w, h, gx, gy, edgeAge } = this
-    const ux = Math.cos(r.angle)
-    const uy = Math.sin(r.angle)
-    const vx = -uy
-    const vy = ux
+    const { ux, uy, vx, vy, lx, ly, sx, sy } = axes(r)
     let hits = 0
     let old = 0
     const walk = (ox: number, oy: number, dx: number, dy: number, len: number, nx: number, ny: number) => {
@@ -456,8 +472,8 @@ export class CardTracker {
         ux,
         uy,
         r.length,
-        vx,
-        vy,
+        lx,
+        ly,
       )
       walk(
         r.cx + ux * sign * (r.length / 2) - vx * (r.width / 2),
@@ -465,8 +481,8 @@ export class CardTracker {
         vx,
         vy,
         r.width,
-        ux,
-        uy,
+        sx,
+        sy,
       )
     }
     return hits ? old / hits : 0
@@ -518,10 +534,7 @@ export class CardTracker {
 
   /** Whiteness just inside (or, with outside, just beyond) each of the four sides. */
   private rim(r: Rect, outside = false): number[] {
-    const ux = Math.cos(r.angle)
-    const uy = Math.sin(r.angle)
-    const vx = -uy
-    const vy = ux
+    const { ux, uy, vx, vy } = axes(r)
     const inset = Math.max(1.5, Math.min(r.length, r.width) * 0.06) * (outside ? -1.5 : 1)
     const L = r.length
     const W = r.width
@@ -541,10 +554,7 @@ export class CardTracker {
 
   /** The four sides' edge strengths for a rectangle scaled by s about its centre. */
   private sides(r: Rect, s: number): number[] {
-    const ux = Math.cos(r.angle)
-    const uy = Math.sin(r.angle)
-    const vx = -uy
-    const vy = ux
+    const { ux, uy, vx, vy, lx, ly, sx, sy } = axes(r)
     const L = r.length * s
     const W = r.width * s
     const out: number[] = []
@@ -553,12 +563,12 @@ export class CardTracker {
     for (const sign of [-1, 1]) {
       const ox = r.cx + vx * sign * (W / 2) - ux * (L / 2)
       const oy = r.cy + vy * sign * (W / 2) - uy * (L / 2)
-      out.push(this.lineEdge(ox, oy, ux, uy, L, -sign * vx, -sign * vy))
+      out.push(this.lineEdge(ox, oy, ux, uy, L, -sign * lx, -sign * ly))
     }
     for (const sign of [-1, 1]) {
       const ox = r.cx + ux * sign * (L / 2) - vx * (W / 2)
       const oy = r.cy + uy * sign * (L / 2) - vy * (W / 2)
-      out.push(this.lineEdge(ox, oy, vx, vy, W, -sign * ux, -sign * uy))
+      out.push(this.lineEdge(ox, oy, vx, vy, W, -sign * sx, -sign * sy))
     }
     return out
   }
@@ -584,7 +594,7 @@ export class CardTracker {
   }
 
   /** Nudges a rectangle onto the edges by coordinate ascent, within the given limits. */
-  private refine(start: Rect, limits: { minLen: number; maxLen: number; minRatio: number; maxRatio: number }) {
+  private refine(start: Rect, limits: Limits) {
     let r = { ...start }
     let best = this.score(r)
     let step = { pos: Math.max(1, r.length * 0.05), angle: 0.06, size: 0.05 }
@@ -596,12 +606,15 @@ export class CardTracker {
         (q, sg) => ({ ...q, length: q.length * (1 + sg * step.size), width: q.width * (1 + sg * step.size) }),
         (q, sg) => ({ ...q, width: q.width * (1 + sg * step.size) }),
       ]
+      // Leaning the short sides (a tilted card) only where tilted outlines are allowed.
+      if (limits.maxSkew > 0) tries.push((q, sg) => ({ ...q, skew: (q.skew ?? 0) + sg * step.angle * 2 }))
       for (const make of tries) {
         for (const sg of [-1, 1]) {
           const q = make(r, sg)
           const ratio = q.width / q.length
           if (q.length < limits.minLen || q.length > limits.maxLen) continue
           if (ratio < limits.minRatio || ratio > limits.maxRatio) continue
+          if (Math.abs(q.skew ?? 0) > limits.maxSkew) continue
           const sc = this.score(q)
           if (sc > best) {
             best = sc
@@ -667,13 +680,18 @@ export class CardTracker {
    * back is a ring), so try every orientation and a few sizes about its
    * centre, then snap the best few onto the edges.
    */
-  private fitCard(blob: Rect, limits: { minLen: number; maxLen: number; minRatio: number; maxRatio: number }) {
+  private fitCard(blob: Rect, limits: Limits) {
     const seeds: { r: Rect; s: number }[] = []
     for (let a = 0; a < Math.PI; a += Math.PI / 18) {
       for (const sl of [0.6, 0.8, 1]) {
         const length = Math.min(limits.maxLen, Math.max(limits.minLen, blob.length * sl))
         for (const ratio of [CARD_ASPECT, 0.45]) {
           const r = { cx: blob.cx, cy: blob.cy, angle: a, length, width: length * ratio }
+          seeds.push({ r, s: this.score(r) })
+        }
+        // A card tilted towards the camera: its long sides foreshortened, its short sides leaning.
+        for (const skew of limits.maxSkew > 0 ? [-TILT_SEED, TILT_SEED] : []) {
+          const r = { cx: blob.cx, cy: blob.cy, angle: a, length, width: length * TILT_RATIO, skew }
           seeds.push({ r, s: this.score(r) })
         }
       }
@@ -693,7 +711,7 @@ export class CardTracker {
     cy: number,
     bw: number,
     bh: number,
-    limits: { minLen: number; maxLen: number; minRatio: number; maxRatio: number },
+    limits: Limits,
   ) {
     const seeds: { r: Rect; s: number }[] = []
     for (const ox of [-0.15, 0, 0.15]) {
@@ -726,7 +744,7 @@ export class CardTracker {
   private edgeFits(
     near: HandGeo[],
     expected: number,
-    limits: { minLen: number; maxLen: number; minRatio: number; maxRatio: number },
+    limits: Limits,
   ) {
     if (!near.length) return []
     const { w, h, gx, gy, norm } = this
@@ -856,7 +874,7 @@ export class CardTracker {
     const holder = seen ?? (this.holderMissing <= 30 ? this.lastHolder : null)
 
     // The deck: a card-proportioned white blob centred in the box, snapped onto its edges.
-    const limits = { minLen: bw * 0.4, maxLen: bw * 1.2, minRatio: CARD_ASPECT * 0.8, maxRatio: MAX_RATIO }
+    const limits = { minLen: bw * 0.4, maxLen: bw * 1.2, minRatio: CARD_ASPECT * 0.8, maxRatio: MAX_RATIO, maxSkew: 0 }
     let found: Rect | null = null
     let bestScore = 0
     // Last frame's fit first: the deck is being held still, so it's usually right where it was.
@@ -1128,14 +1146,13 @@ export class CardTracker {
   /** Share of a rectangle that lies over a hand: its palm, or within a finger's width of a finger bone. */
   private handCover(r: Rect, hands: HandGeo[]): number {
     if (!hands.length) return 0
-    const ux = Math.cos(r.angle)
-    const uy = Math.sin(r.angle)
+    const { ux, uy, vx, vy } = axes(r)
     let n = 0
     let over = 0
     for (let a = -0.4; a < 0.45; a += 0.2) {
       for (let b = -0.4; b < 0.45; b += 0.2) {
-        const x = r.cx + ux * r.length * a - uy * r.width * b
-        const y = r.cy + uy * r.length * a + ux * r.width * b
+        const x = r.cx + ux * r.length * a + vx * r.width * b
+        const y = r.cy + uy * r.length * a + vy * r.width * b
         n++
         if (hands.some((g) => overHand(g, x, y))) over++
       }
@@ -1144,7 +1161,8 @@ export class CardTracker {
   }
 
   private normalised(r: Rect): Omit<Packet, 'id' | 'hand'> {
-    return { cx: r.cx / this.w, cy: r.cy / this.h, angle: r.angle, length: r.length / this.h, width: r.width / this.h }
+    const out = { cx: r.cx / this.w, cy: r.cy / this.h, angle: r.angle, length: r.length / this.h, width: r.width / this.h }
+    return r.skew ? { ...out, skew: r.skew } : out
   }
 
   /** Packets: solid card-shaped white blobs of about the deck's size near the hands, sitting on image edges. */
@@ -1180,7 +1198,13 @@ export class CardTracker {
     // camera, but the tracker's hand sizes swing too much when fingers are hidden.)
     const expected = deck.length * h
     const expectedArea = expected * expected * CARD_ASPECT
-    const limits = { minLen: expected * 0.5, maxLen: expected * 1.6, minRatio: MIN_RATIO, maxRatio: MAX_RATIO }
+    const limits = {
+      minLen: expected * 0.5,
+      maxLen: expected * 1.6,
+      minRatio: MIN_RATIO,
+      maxRatio: TILT_MAX_RATIO,
+      maxSkew: MAX_SKEW,
+    }
 
     // Blobs anywhere (cropping to a region around the hands would cut a deck in half when the
     // tracker has lost the hand holding it); ones far from every hand are dropped at the end.
@@ -1266,6 +1290,20 @@ export class CardTracker {
   }
 }
 
+/**
+ * A rectangle's directions: u along its length and v along its width (leaning by the skew), and
+ * the normals of its long sides (l, at right angles to u) and short sides (s, at right angles to v),
+ * each pointing the way u or v points.
+ */
+function axes(r: Rect) {
+  const ux = Math.cos(r.angle)
+  const uy = Math.sin(r.angle)
+  const k = r.skew ?? 0
+  const vx = -Math.sin(r.angle + k)
+  const vy = Math.cos(r.angle + k)
+  return { ux, uy, vx, vy, lx: -uy, ly: ux, sx: vy, sy: -vx }
+}
+
 function mean(v: number[]) {
   return v.reduce((s, x) => s + x, 0) / v.length
 }
@@ -1346,6 +1384,7 @@ function smooth(prev: Rect, next: Rect): Rect {
     angle: a2 / 2,
     length: prev.length + (next.length - prev.length) * k,
     width: prev.width + (next.width - prev.width) * k,
+    skew: (prev.skew ?? 0) + ((next.skew ?? 0) - (prev.skew ?? 0)) * k,
   }
 }
 
