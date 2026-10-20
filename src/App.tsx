@@ -116,11 +116,16 @@ export default function App() {
     }
   })
   const [trackCards, setTrackCards] = useState(() => readPref('cardistry.trackCards', true))
+  const [borderless, setBorderless] = useState(() => readPref('cardistry.borderless', false))
   const [showCards, setShowCards] = useState(() => readPref('cardistry.showCards', true))
   const [hud, setHud] = useState(() => readPref('cardistry.hud', true))
   const [wireframe, setWireframe] = useState(() => readPref('cardistry.wireframe', true))
   // One tracker for the app's life; it keeps the learned deck between camera sessions.
-  const [cardTracker] = useState(() => new CardTracker(loadDeck()))
+  const [cardTracker] = useState(() => {
+    const t = new CardTracker(loadDeck())
+    t.borderless = readPref('cardistry.borderless', false)
+    return t
+  })
   const trackCardsRef = useRef(trackCards)
   useEffect(() => {
     trackCardsRef.current = trackCards
@@ -462,7 +467,7 @@ export default function App() {
     loop.cards = trackCards && !cardsSkipped ? cardTracker : null
     loop.showCards = showCards
     loop.showWireframe = wireframe
-  }, [trackCards, showCards, wireframe, cardsSkipped, phase, cardTracker])
+  }, [trackCards, showCards, wireframe, cardsSkipped, phase, cardTracker, borderless])
 
   const finishDeck = useCallback(() => setDeckStep('done'), [])
   const recalibrateDeck = () => {
@@ -828,6 +833,21 @@ export default function App() {
             />
             Track cards too (experimental). Moves are matched on fingers and cards together
           </label>
+          {trackCards && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={borderless}
+                onChange={(e) => {
+                  setBorderless(e.target.checked)
+                  cardTracker.borderless = e.target.checked
+                  remember('cardistry.borderless', e.target.checked)
+                }}
+              />
+              Borderless deck: find packets by their straight edges too (can pick up shelves and drawers near your
+              hands)
+            </label>
+          )}
           {trackCards && (
             <label className="check">
               <input

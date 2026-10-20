@@ -22,6 +22,14 @@ const MIN_AREA = 0.15
 const MAX_AREA = 6
 /** How much of a blob's fitted rectangle must be blob (a back's white border with a patterned middle is a ring). */
 const MIN_FILL = 0.15
+/** Straight edges: direction bins over 180° and offset bins (px) for finding card sides; a side must be this share of the deck's length. */
+const SEG_ANGLES = 36
+const SEG_RHO = 3
+const SEG_MIN_LEN = 0.35
+/** An edge that has sat in the same place for this many processed frames is furniture, not a card. */
+const BG_AGE = 30
+/** An edge-seeded rectangle whose sides are mostly such old edges is not a packet. */
+const MAX_STALE = 0.4
 /** Fans: hinge votes land in cells this wide; edge directions are binned this finely over 180°. */
 const FAN_CELL = 4
 const FAN_BINS = 12
@@ -128,11 +136,20 @@ export class CardTracker {
   private norm = 1
   /** 1 where a pixel is white-ish (bright and unsaturated). */
   private white = new Uint8Array(0)
+  /** How many processed frames in a row each pixel has been a strong edge (capped). */
+  private edgeAge = new Uint8Array(0)
   private tracks: Track[] = []
   private fanTracks: FanTrack[] = []
+  private fanTick = 0
   private nextId = 1
   /** Fans found in the last processed frame, alongside the packets process() returns. */
   fans: Fan[] = []
+  /**
+   * Also seed packets from straight edges, for decks whose backs have no
+   * white border. Off by default: edges alone also pick up drawers, shelves
+   * and the odd hand, which the white-blob path never does.
+   */
+  borderless = false
   private lastGeo: HandGeo[] = []
   private lastGeoAge = Infinity
   private deck: DeckModel | null = null
@@ -236,6 +253,7 @@ export class CardTracker {
       this.gx = new Float32Array(n)
       this.gy = new Float32Array(n)
       this.white = new Uint8Array(n)
+      this.edgeAge = new Uint8Array(n)
     }
     const grey = new Float32Array(n)
     for (let i = 0; i < n; i++) grey[i] = px[i * 4] * 0.3 + px[i * 4 + 1] * 0.59 + px[i * 4 + 2] * 0.11
@@ -274,6 +292,67 @@ export class CardTracker {
     mags.sort((p, q) => p - q)
     // The 95th percentile: a clear edge, but not the single hardest one in view.
     this.norm = Math.max(40, mags[Math.floor(mags.length * 0.95)] ?? 40)
+    const strong = this.norm * 0.5
+    const age = this.edgeAge
+    for (let i = 0; i < n; i++) {
+      if (Math.abs(gx[i]) + Math.abs(gy[i]) >= strong) {
+        if (age[i] < 255) age[i]++
+      } else age[i] = 0
+    }
+  }
+
+  /** The share of a rectangle's edge pixels that have been edges for a long time (furniture, shelves, drawers). */
+  private staleness(r: Rect): number {
+    const { w, h, gx, gy, edgeAge } = this
+    const ux = Math.cos(r.angle)
+    const uy = Math.sin(r.angle)
+    const vx = -uy
+    const vy = ux
+    let hits = 0
+    let old = 0
+    const walk = (ox: number, oy: number, dx: number, dy: number, len: number, nx: number, ny: number) => {
+      const steps = Math.max(4, Math.min(16, Math.round(len / 3)))
+      for (let k = 0; k < steps; k++) {
+        const t = (0.1 + (0.8 * (k + 0.5)) / steps) * len
+        let best = 0
+        let bestI = -1
+        for (let o = -1; o <= 1; o++) {
+          const px = Math.round(ox + dx * t + nx * o)
+          const py = Math.round(oy + dy * t + ny * o)
+          if (px < 1 || py < 1 || px >= w - 1 || py >= h - 1) continue
+          const i = py * w + px
+          const v = Math.abs(gx[i] * nx + gy[i] * ny)
+          if (v > best) {
+            best = v
+            bestI = i
+          }
+        }
+        if (bestI < 0 || best < this.norm * 0.3) continue
+        hits++
+        if (edgeAge[bestI] >= BG_AGE) old++
+      }
+    }
+    for (const sign of [-1, 1]) {
+      walk(
+        r.cx + vx * sign * (r.width / 2) - ux * (r.length / 2),
+        r.cy + vy * sign * (r.width / 2) - uy * (r.length / 2),
+        ux,
+        uy,
+        r.length,
+        vx,
+        vy,
+      )
+      walk(
+        r.cx + ux * sign * (r.length / 2) - vx * (r.width / 2),
+        r.cy + uy * sign * (r.length / 2) - vy * (r.width / 2),
+        vx,
+        vy,
+        r.width,
+        ux,
+        uy,
+      )
+    }
+    return hits ? old / hits : 0
   }
 
   /** Edge evidence (0..1) for the line from (x, y) along (dx, dy) for len pixels, with the edge brightening along (nx, ny). */
@@ -489,6 +568,122 @@ export class CardTracker {
       if (!best || fit.score > best.score) best = fit
     }
     return best
+  }
+
+  /**
+   * Card-shaped rectangles seeded from straight edges near the hands, for
+   * backs with no white border (which the white mask misses). Edge pixels
+   * vote by direction and offset; each clear straight run is tried as a
+   * card's long side and as its short side, on either side of the line,
+   * and the best fits are refined onto the edges.
+   */
+  private edgeFits(
+    near: HandGeo[],
+    expected: number,
+    limits: { minLen: number; maxLen: number; minRatio: number; maxRatio: number },
+  ) {
+    if (!near.length) return []
+    const { w, h, gx, gy, norm } = this
+    let x0 = Infinity
+    let y0 = Infinity
+    let x1 = -Infinity
+    let y1 = -Infinity
+    for (const g of near) {
+      for (const [x, y] of g.pts) {
+        x0 = Math.min(x0, x)
+        x1 = Math.max(x1, x)
+        y0 = Math.min(y0, y)
+        y1 = Math.max(y1, y)
+      }
+    }
+    const reach = expected * 1.2
+    const xa = Math.max(2, Math.floor(x0 - reach))
+    const xb = Math.min(w - 2, Math.ceil(x1 + reach))
+    const ya = Math.max(2, Math.floor(y0 - reach))
+    const yb = Math.min(h - 2, Math.ceil(y1 + reach))
+    const diag = Math.ceil(Math.hypot(w, h))
+    const nRho = Math.ceil((2 * diag) / SEG_RHO)
+    const count = new Uint16Array(SEG_ANGLES * nRho)
+    const tMin = new Float32Array(SEG_ANGLES * nRho).fill(Infinity)
+    const tMax = new Float32Array(SEG_ANGLES * nRho).fill(-Infinity)
+    const thr = norm * 0.5
+    for (let y = ya; y < yb; y += 2) {
+      for (let x = xa; x < xb; x += 2) {
+        const i = y * w + x
+        const g = Math.hypot(gx[i], gy[i])
+        if (g < thr) continue
+        // The normal's direction, folded onto 0..π.
+        let a = Math.atan2(gy[i], gx[i])
+        if (a < 0) a += Math.PI
+        const bin = Math.min(SEG_ANGLES - 1, Math.round((a / Math.PI) * SEG_ANGLES) % SEG_ANGLES)
+        const na = (bin / SEG_ANGLES) * Math.PI
+        const nx = Math.cos(na)
+        const ny = Math.sin(na)
+        const rho = x * nx + y * ny
+        const rb = Math.round((rho + diag) / SEG_RHO)
+        if (rb < 0 || rb >= nRho) continue
+        const c = bin * nRho + rb
+        count[c]++
+        // Position along the line.
+        const t = -x * ny + y * nx
+        if (t < tMin[c]) tMin[c] = t
+        if (t > tMax[c]) tMax[c] = t
+      }
+    }
+    // Clear runs: enough votes, longer than a fraction of the deck, and a local peak.
+    const minVotes = (expected * SEG_MIN_LEN) / 2
+    const runs: { bin: number; rb: number; n: number }[] = []
+    for (let bin = 0; bin < SEG_ANGLES; bin++) {
+      for (let rb = 1; rb < nRho - 1; rb++) {
+        const c = bin * nRho + rb
+        const n = count[c]
+        if (n < minVotes || tMax[c] - tMin[c] < expected * SEG_MIN_LEN) continue
+        if (n < count[c - 1] || n < count[c + 1]) continue
+        const prevBin = ((bin + SEG_ANGLES - 1) % SEG_ANGLES) * nRho + rb
+        const nextBin = ((bin + 1) % SEG_ANGLES) * nRho + rb
+        if (n < count[prevBin] || n < count[nextBin]) continue
+        runs.push({ bin, rb, n })
+      }
+    }
+    runs.sort((p, q) => q.n - p.n)
+    const seeds: { r: Rect; s: number }[] = []
+    for (const { bin, rb } of runs.slice(0, 10)) {
+      const c = bin * nRho + rb
+      const na = (bin / SEG_ANGLES) * Math.PI
+      const nx = Math.cos(na)
+      const ny = Math.sin(na)
+      const rho = rb * SEG_RHO - diag
+      const tm = (tMin[c] + tMax[c]) / 2
+      // Run centre and direction (along the line).
+      const mx = nx * rho - ny * tm
+      const my = ny * rho + nx * tm
+      const along = Math.atan2(nx, -ny)
+      const run = tMax[c] - tMin[c]
+      for (const side of [-1, 1]) {
+        // As a long side.
+        for (const length of [run, expected]) {
+          const L = Math.min(limits.maxLen, Math.max(limits.minLen, length))
+          const W = L * CARD_ASPECT
+          const r = { cx: mx + nx * side * (W / 2), cy: my + ny * side * (W / 2), angle: along, length: L, width: W }
+          seeds.push({ r, s: this.score(r) })
+        }
+        // As a short side.
+        const W = Math.min(limits.maxLen * CARD_ASPECT, Math.max(limits.minLen * CARD_ASPECT, run))
+        const L = W / CARD_ASPECT
+        const r = { cx: mx + nx * side * (L / 2), cy: my + ny * side * (L / 2), angle: na, length: L, width: W }
+        seeds.push({ r, s: this.score(r) })
+      }
+    }
+    seeds.sort((p, q) => q.s - p.s)
+    const out: { rect: Rect; score: number }[] = []
+    for (const seed of seeds.slice(0, 6)) {
+      if (seed.s < DETECT_SCORE * 0.5) break
+      const fit = this.refine(seed.r, limits)
+      if (fit.score < DETECT_SCORE) continue
+      if (out.some((o) => Math.hypot(o.rect.cx - fit.rect.cx, o.rect.cy - fit.rect.cy) < fit.rect.width * 0.5)) continue
+      out.push(fit)
+    }
+    return out
   }
 
   /** One calibration frame: find a card-shaped white blob in the box, and learn its size once it holds steady. */
@@ -731,6 +926,8 @@ export class CardTracker {
 
   /** Fans matched frame to frame by hinge, eased, and shown only once they have held for a moment. */
   private trackFans(near: HandGeo[], expected: number): FanTrack[] {
+    // Fans open and close slowly next to the frame rate, so looking every other time is plenty (it is the dearest step).
+    if (this.fanTick++ % 2 === 1) return this.fanTracks.filter((t) => t.hits >= FAN_CONFIRM)
     const found = this.findFans(near, expected)
     const used = new Set<number>()
     const next: FanTrack[] = []
@@ -807,6 +1004,17 @@ export class CardTracker {
       if (!fit || fit.score < DETECT_SCORE) continue
       // A rectangle inside a fan is the fan's outline, not a packet.
       if (fans.some((f) => inSector(f, fit.rect.cx, fit.rect.cy))) continue
+      found.push(fit.rect)
+    }
+    // Backs without a white border don't make a blob; their straight sides still give them away.
+    for (const fit of this.borderless ? this.edgeFits(near, expected, limits) : []) {
+      if (fans.some((f) => inSector(f, fit.rect.cx, fit.rect.cy))) continue
+      // Edges alone also outline drawers and shelves; those have been there all along.
+      if (this.staleness(fit.rect) > MAX_STALE) continue
+      if (
+        found.some((o) => Math.hypot(o.cx - fit.rect.cx, o.cy - fit.rect.cy) < Math.min(o.width, fit.rect.width) * 0.6)
+      )
+        continue
       found.push(fit.rect)
     }
 
