@@ -6,7 +6,7 @@ compatibility_date = "2026-10-01"
 # Sites allowed to call the API (CORS). Comma-separated origins.
 ALLOWED_ORIGINS = "https://kafoosh.github.io,http://localhost:5173,http://localhost:4173"
 # Max shared recordings per device and per IP per day.
-DAILY_UPLOAD_LIMIT = "40"
+DAILY_UPLOAD_LIMIT = "400"
 # TURNSTILE_SECRET is a secret: `wrangler secret put TURNSTILE_SECRET`.
 # When it's unset (local dev), Turnstile checks are skipped.
 
