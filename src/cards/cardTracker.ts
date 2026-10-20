@@ -17,6 +17,11 @@ const KEEP_SCORE = 0.1
 /** Short side over long side: face-on is the card's own proportions, tilted packets look thinner. */
 const MIN_RATIO = 0.3
 const MAX_RATIO = CARD_ASPECT * 1.15
+/** A full deck seen edge-on: its white side, 88 mm by about 17; thinner packets go down to this. */
+const EDGE_RATIO = 0.2
+const MIN_EDGE_RATIO = 0.1
+/** Edge score an edge-on packet needs. */
+const EDGE_SCORE = 0.22
 /**
  * A card tilted towards or away from the camera: its long sides look shorter, so it looks squarer,
  * and its short sides lean (radians off square). Seeds try this lean at this squareness.
@@ -69,6 +74,8 @@ const MAX_FANS = 2
 /** A rectangle mostly over a hand (palm and fingers) is often the hand's own outline: it needs a clearer fit to count. */
 const HAND_COVER = 0.5
 const HAND_SCORE = 0.25
+/** A thin strip mostly over a hand is a finger, however straight. */
+const THIN_HAND_COVER = 0.3
 /** Finger width as a share of hand size (wrist to middle knuckle), for telling what a hand covers. */
 const FINGER_R = 0.13
 const PALM = [0, 1, 5, 9, 13, 17]
@@ -137,6 +144,8 @@ interface Track extends Rect {
 interface Fit {
   rect: Rect
   score: number
+  /** Fitted as a packet seen edge-on. */
+  thin?: boolean
 }
 
 /** A fan in working-frame pixels: hinge, sector (counter-clockwise from `from` to `to`) and reach. */
@@ -685,7 +694,7 @@ export class CardTracker {
     for (let a = 0; a < Math.PI; a += Math.PI / 18) {
       for (const sl of [0.6, 0.8, 1]) {
         const length = Math.min(limits.maxLen, Math.max(limits.minLen, blob.length * sl))
-        for (const ratio of [CARD_ASPECT, 0.45]) {
+        for (const ratio of limits.maxRatio <= MIN_RATIO ? [EDGE_RATIO] : [CARD_ASPECT, 0.45]) {
           const r = { cx: blob.cx, cy: blob.cy, angle: a, length, width: length * ratio }
           seeds.push({ r, s: this.score(r) })
         }
@@ -1212,6 +1221,7 @@ export class CardTracker {
       maxRatio: TILT_MAX_RATIO,
       maxSkew: MAX_SKEW,
     }
+    const edgeLimits = { ...limits, minRatio: MIN_EDGE_RATIO, maxRatio: MIN_RATIO, maxSkew: 0 }
 
     // Blobs anywhere (cropping to a region around the hands would cut a deck in half when the
     // tracker has lost the hand holding it); ones far from every hand are dropped at the end.
@@ -1222,6 +1232,10 @@ export class CardTracker {
       if (fill < MIN_FILL) continue
       const fit = this.fitCard(rect, limits)
       if (fit && fit.score >= DETECT_SCORE) fits.push(fit)
+      // Maybe a packet seen edge-on: a thin white side. Thin shapes sit on edges more easily (a
+      // finger, a shelf, a card's own border), so the fit has to be clearer.
+      const edge = this.fitCard(rect, edgeLimits)
+      if (edge && edge.score >= EDGE_SCORE) fits.push({ ...edge, thin: true })
     }
     // Backs without a white border don't make a blob; their straight sides still give them away.
     for (const fit of this.borderless ? this.edgeFits(near, expected, limits) : []) {
@@ -1231,13 +1245,16 @@ export class CardTracker {
     // Best first, and one rectangle per packet: two blobs of one packet (a finger across it) or a
     // blob and an edge run often land on the same card.
     const found: Rect[] = []
-    for (const fit of fits.sort((a, b) => b.score - a.score)) {
+    // Faces before edge-on fits: a face's white border also makes a thin strip, which isn't a packet.
+    for (const fit of fits.sort((a, b) => Number(a.thin ?? 0) - Number(b.thin ?? 0) || b.score - a.score)) {
       const r = fit.rect
       // A rectangle inside a fan is the fan's outline, not a packet.
       if (fans.some((f) => inSector(f, r.cx, r.cy))) continue
       // Pale skin reads as white, so a hand can outline itself; a card held over it still fits clearly.
       if (fit.score < HAND_SCORE && this.handCover(r, near) > HAND_COVER) continue
-      if (found.some((o) => overlaps(o, r))) continue
+      // A finger is a thin pale strip too.
+      if (fit.thin && this.handCover(r, near) > THIN_HAND_COVER) continue
+      if (found.some((o) => overlaps(o, r, fit.thin ? 0.5 : 0.3))) continue
       found.push(r)
     }
 
@@ -1315,14 +1332,14 @@ function mean(v: number[]) {
   return v.reduce((s, x) => s + x, 0) / v.length
 }
 
-/** Whether two rectangles are one packet: either's centre lies well inside the other. */
-function overlaps(a: Rect, b: Rect) {
+/** Whether two rectangles are one packet: either's centre lies well inside the other (within this share of its sides from its centre). */
+function overlaps(a: Rect, b: Rect, within = 0.3) {
   const inside = (p: Rect, q: Rect) => {
     const dx = q.cx - p.cx
     const dy = q.cy - p.cy
     const u = dx * Math.cos(p.angle) + dy * Math.sin(p.angle)
     const v = -dx * Math.sin(p.angle) + dy * Math.cos(p.angle)
-    return Math.abs(u) < p.length * 0.3 && Math.abs(v) < p.width * 0.3
+    return Math.abs(u) < p.length * within && Math.abs(v) < p.width * within
   }
   return inside(a, b) || inside(b, a)
 }
