@@ -440,6 +440,11 @@ export default function App() {
       // The take is safe on this device; sharing can fail without losing it.
       try {
         const [result] = await uploadBatch([rec], d.share.nickname, d.share.token)
+        if (!result.ok && result.code === 'move_cap') {
+          // Sharing it later won't help until one of the shared takes is deleted.
+          setSavedNote(`Saved ${d.moveName} on this device. ${result.error}`)
+          return
+        }
         if (!result.ok) throw new Error(result.error)
         await markShared(rec.id, result.id)
         invalidateMoveCandidates()

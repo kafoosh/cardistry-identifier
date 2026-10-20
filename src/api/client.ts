@@ -134,7 +134,8 @@ export interface UploadResult {
   move: { id: string; name: string; slug: string; status: string }
 }
 
-export type BatchItemResult = ({ ok: true } & UploadResult) | { ok: false; error: string }
+/** `code` is 'move_cap' when this device already shared its limit of takes of that move. */
+export type BatchItemResult = ({ ok: true } & UploadResult) | { ok: false; error: string; code?: string }
 
 function uploadItem(rec: LocalRecording) {
   return {
@@ -174,7 +175,7 @@ export const MAX_BATCH = 20
 
 /** Shares up to MAX_BATCH recordings behind one captcha token. Results line up with the input. */
 export async function uploadBatch(recs: LocalRecording[], nickname: string, turnstileToken: string): Promise<BatchItemResult[]> {
-  const out = await call<{ results: (({ ok: true } & Uploaded) | { ok: false; error: string })[] }>('/api/recordings/batch', {
+  const out = await call<{ results: (({ ok: true } & Uploaded) | { ok: false; error: string; code?: string })[] }>('/api/recordings/batch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ turnstileToken, deviceId: deviceId(), nickname: nickname || undefined, items: recs.map(uploadItem) }),
