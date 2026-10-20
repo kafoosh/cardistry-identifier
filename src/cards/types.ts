@@ -16,3 +16,20 @@ export interface Packet {
   /** Which hand slot holds it (nearest hand), or null when it isn't near either. */
   hand: 0 | 1 | null
 }
+
+/**
+ * A spread of cards fanned around a hinge (where the thumb holds the
+ * corners), in the same normalised image space as a Packet.
+ */
+export interface Fan {
+  id: number
+  /** The hinge, in 0..1 of the frame's width and height. */
+  hx: number
+  hy: number
+  /** The sector the cards sweep, in pixel-space radians, counter-clockwise from `from` to `to`. */
+  from: number
+  to: number
+  /** How far the cards reach from the hinge, as a share of the frame height. */
+  radius: number
+  hand: 0 | 1 | null
+}

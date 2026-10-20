@@ -1,5 +1,5 @@
 import { HAND_CONNECTIONS } from './handTracker'
-import type { Packet } from '../cards/types'
+import type { Fan, Packet } from '../cards/types'
 import type { TrackedHand } from './types'
 
 export const SLOT_COLOURS = ['#2dd4bf', '#fbbf24'] as const
@@ -60,6 +60,28 @@ export function drawCards(ctx: CanvasRenderingContext2D, packets: Packet[]) {
     ctx.lineWidth = 2 * unit
     ctx.setLineDash([6 * unit, 4 * unit])
     ctx.strokeRect(-hl, -hw, hl * 2, hw * 2)
+    ctx.restore()
+  }
+}
+
+/** Fans as a sector from the hinge: two rays and the arc the cards sweep. */
+export function drawFans(ctx: CanvasRenderingContext2D, fans: Fan[]) {
+  const { width: w, height: h } = ctx.canvas
+  const unit = Math.max(w, h) / 640
+  for (const f of fans) {
+    const hx = f.hx * w
+    const hy = f.hy * h
+    const r = f.radius * h
+    ctx.save()
+    ctx.strokeStyle = f.hand === null ? '#ffffff' : SLOT_COLOURS[f.hand]
+    ctx.lineWidth = 2 * unit
+    ctx.setLineDash([6 * unit, 4 * unit])
+    ctx.beginPath()
+    ctx.moveTo(hx + Math.cos(f.from) * r, hy + Math.sin(f.from) * r)
+    ctx.lineTo(hx, hy)
+    ctx.lineTo(hx + Math.cos(f.to) * r, hy + Math.sin(f.to) * r)
+    ctx.arc(hx, hy, r, f.to, f.from, true)
+    ctx.stroke()
     ctx.restore()
   }
 }

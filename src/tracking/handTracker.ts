@@ -25,9 +25,10 @@ export async function loadHandTracker(preferGpu = true): Promise<LoadedTracker> 
         baseOptions: { modelAssetPath: MODEL_PATH, delegate },
         runningMode: 'VIDEO',
         numHands: 2,
-        minHandDetectionConfidence: 0.5,
-        minHandPresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5,
+        // Lenient, so the second hand (often half hidden behind the deck) is picked up and kept.
+        minHandDetectionConfidence: 0.3,
+        minHandPresenceConfidence: 0.4,
+        minTrackingConfidence: 0.4,
       })
       return { landmarker, delegate }
     } catch (err) {

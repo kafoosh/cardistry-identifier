@@ -8,6 +8,23 @@ interface SlotMemory {
   x: number
   y: number
   t: number
+  /** Last smoothed landmarks, so the next frame's can be eased from them. */
+  landmarks?: Point3[]
+}
+
+/** Eases landmarks towards each new frame: still hands stop shimmering, while a fast move follows at once. */
+function smoothLandmarks(prev: Point3[] | undefined, next: Point3[]): Point3[] {
+  if (!prev) return next
+  let d = 0
+  for (let i = 0; i < next.length; i++) d += Math.hypot(next[i][0] - prev[i][0], next[i][1] - prev[i][1])
+  d /= next.length
+  // Jitter moves a landmark a few thousandths of the frame; a deliberate move is several times that.
+  const a = Math.min(1, 0.3 + d / 0.015)
+  return next.map((p, i) => [
+    prev[i][0] + (p[0] - prev[i][0]) * a,
+    prev[i][1] + (p[1] - prev[i][1]) * a,
+    prev[i][2] + (p[2] - prev[i][2]) * a,
+  ])
 }
 
 /** Palm centre: mean of wrist and the four finger base knuckles. */
@@ -53,15 +70,19 @@ export class HandIdentity {
       return { landmarks, handedness: label, score: cat?.score ?? 0, centre: palmCentre(landmarks) }
     })
 
-    const slotsFor = this.match(raw.map((h) => h.centre), raw.map((h) => h.handedness))
+    const slotsFor = this.match(
+      raw.map((h) => h.centre),
+      raw.map((h) => h.handedness),
+    )
     const hands: TrackedHand[] = raw.map((h, i) => ({
       slot: slotsFor[i],
       handedness: h.handedness,
       score: h.score,
-      landmarks: h.landmarks,
+      landmarks: smoothLandmarks(this.slots[slotsFor[i]]?.landmarks, h.landmarks),
     }))
-    for (const h of raw.map((r, i) => ({ c: r.centre, slot: slotsFor[i] }))) {
-      this.slots[h.slot] = { x: h.c[0], y: h.c[1], t }
+    for (const h of hands) {
+      const c = palmCentre(h.landmarks)
+      this.slots[h.slot] = { x: c[0], y: c[1], t, landmarks: h.landmarks }
     }
     return hands.sort((a, b) => a.slot - b.slot)
   }
@@ -81,8 +102,7 @@ export class HandIdentity {
 
     // Two hands: pick whichever of the two pairings moves the hands least.
     if (m0 || m1) {
-      const cost = (a: [number, number], b: [number, number]) =>
-        (m0 ? dist2(a, m0) : 0) + (m1 ? dist2(b, m1) : 0)
+      const cost = (a: [number, number], b: [number, number]) => (m0 ? dist2(a, m0) : 0) + (m1 ? dist2(b, m1) : 0)
       return cost(centres[0], centres[1]) <= cost(centres[1], centres[0]) ? [0, 1] : [1, 0]
     }
     // No history: trust the labels if they disagree, otherwise split by screen position.

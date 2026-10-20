@@ -1,4 +1,4 @@
-import type { Packet } from '../cards/types'
+import type { Fan, Packet } from '../cards/types'
 
 /** One landmark in normalised image coordinates (x, y in 0..1, z relative depth). */
 export type Point3 = [number, number, number]
@@ -23,6 +23,8 @@ export interface Frame {
   hands: TrackedHand[]
   /** Card packets, when card tracking ran on this frame (undefined: tracking off, or an older recording). */
   cards?: Packet[]
+  /** Fanned spreads, when card tracking is on. */
+  fans?: Fan[]
 }
 
 export type CameraFacing = 'user' | 'environment'

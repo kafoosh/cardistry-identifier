@@ -1,6 +1,6 @@
 import type { TrackedHand } from '../tracking/types'
 import { CARD_ASPECT, saveDeck, type DeckModel } from './deckModel'
-import type { Packet } from './types'
+import type { Fan, Packet } from './types'
 
 /** Working resolution (long side). Keeps a frame to a few ms while a packet still spans dozens of pixels. */
 const WORK_W = 256
@@ -22,6 +22,23 @@ const MIN_AREA = 0.15
 const MAX_AREA = 6
 /** How much of a blob's fitted rectangle must be blob (a back's white border with a patterned middle is a ring). */
 const MIN_FILL = 0.15
+/** Fans: hinge votes land in cells this wide; edge directions are binned this finely over 180°. */
+const FAN_CELL = 4
+const FAN_BINS = 12
+/** Edge pixels this strong (relative to the frame's strong-edge level) vote; fanned faces are faint. */
+const FAN_EDGE = 0.12
+/** A hinge needs card edges arriving from at least this many direction bins. */
+const FAN_MIN_BINS = 8
+/** A fan sweeps at least this angle (radians) and its cards are at least this white. */
+const FAN_MIN_SPAN = 1.4
+const FAN_MIN_WHITE = 0.35
+const FAN_MIN_EDGE = 0.17
+/** Mean edge strength along arcs through the cards: many thin cards make fine stripes, a few spread cards don't. */
+const FAN_MIN_TEXTURE = 0.25
+/** A fan shows after this many consecutive frames, and survives this many missed ones. */
+const FAN_CONFIRM = 2
+const FAN_MISSES = 3
+const MAX_FANS = 2
 
 /** Where the deck is held for calibration: a card-shaped box in the middle, in normalised frame coordinates. */
 export function calibrationBox(aspect: number) {
@@ -63,6 +80,23 @@ interface Track extends Rect {
   misses: number
 }
 
+/** A fan in working-frame pixels: hinge, sector (counter-clockwise from `from` to `to`) and reach. */
+interface Sector {
+  hx: number
+  hy: number
+  from: number
+  to: number
+  radius: number
+  /** Mean edge strength across the cards (along arcs inside the sector): a fan of many cards is finely striped. */
+  texture: number
+}
+
+interface FanTrack extends Sector {
+  id: number
+  hits: number
+  misses: number
+}
+
 interface Blob {
   n: number
   sx: number
@@ -95,7 +129,10 @@ export class CardTracker {
   /** 1 where a pixel is white-ish (bright and unsaturated). */
   private white = new Uint8Array(0)
   private tracks: Track[] = []
+  private fanTracks: FanTrack[] = []
   private nextId = 1
+  /** Fans found in the last processed frame, alongside the packets process() returns. */
+  fans: Fan[] = []
   private lastGeo: HandGeo[] = []
   private lastGeoAge = Infinity
   private deck: DeckModel | null = null
@@ -185,6 +222,7 @@ export class CardTracker {
     const geo = this.geometry(hands)
     if (this.calibrating) {
       this.calibrateStep(geo)
+      this.fans = []
       return []
     }
     return this.detect(geo)
@@ -535,6 +573,190 @@ export class CardTracker {
     }
   }
 
+  /**
+   * Fans. The long edges of fanned cards all run through the hinge, so each
+   * strong edge pixel votes for the cells a card length along its edge line,
+   * in both directions, tagged with the edge's direction. A cell that
+   * collects votes from many directions is a hinge; rays from it then say
+   * which angles have card edges along them (the sector), and the sector has
+   * to be mostly white.
+   */
+  private findFans(near: HandGeo[], expected: number): Sector[] {
+    if (!near.length) return []
+    const { w, h, gx, gy, norm, white } = this
+    let x0 = Infinity
+    let y0 = Infinity
+    let x1 = -Infinity
+    let y1 = -Infinity
+    for (const g of near) {
+      for (const [x, y] of g.pts) {
+        x0 = Math.min(x0, x)
+        x1 = Math.max(x1, x)
+        y0 = Math.min(y0, y)
+        y1 = Math.max(y1, y)
+      }
+    }
+    const reach = expected * 1.3
+    const cw = Math.ceil(w / FAN_CELL)
+    const ch = Math.ceil(h / FAN_CELL)
+    const votes = new Uint16Array(cw * ch * FAN_BINS)
+    const thr = norm * FAN_EDGE
+    const dMin = expected * 0.3
+    const dMax = expected * 1.05
+    const ya = Math.max(2, Math.floor(y0 - reach))
+    const yb = Math.min(h - 2, Math.ceil(y1 + reach))
+    const xa = Math.max(2, Math.floor(x0 - reach))
+    const xb = Math.min(w - 2, Math.ceil(x1 + reach))
+    for (let y = ya; y < yb; y += 2) {
+      for (let x = xa; x < xb; x += 2) {
+        const i = y * w + x
+        const g = Math.hypot(gx[i], gy[i])
+        if (g < thr) continue
+        const ex = -gy[i] / g
+        const ey = gx[i] / g
+        let ang = Math.atan2(ey, ex)
+        if (ang < 0) ang += Math.PI
+        const bin = Math.min(FAN_BINS - 1, Math.floor((ang / Math.PI) * FAN_BINS))
+        for (const s of [1, -1]) {
+          for (let d = dMin; d <= dMax; d += 4) {
+            const px = x + ex * d * s
+            const py = y + ey * d * s
+            if (px < 0 || py < 0 || px >= w || py >= h) break
+            votes[(((py / FAN_CELL) | 0) * cw + ((px / FAN_CELL) | 0)) * FAN_BINS + bin]++
+          }
+        }
+      }
+    }
+    const cand: { c: number; bins: number; total: number }[] = []
+    for (let c = 0; c < cw * ch; c++) {
+      let bins = 0
+      let total = 0
+      for (let b = 0; b < FAN_BINS; b++) {
+        const v = votes[c * FAN_BINS + b]
+        total += v
+        if (v >= 4) bins++
+      }
+      if (bins >= FAN_MIN_BINS) cand.push({ c, bins, total })
+    }
+    cand.sort((a, b) => b.bins - a.bins || b.total - a.total)
+
+    const out: Sector[] = []
+    const N = 120
+    const prof = new Float32Array(N)
+    const wh = new Float32Array(N)
+    const sm = new Float32Array(N)
+    for (const k of cand.slice(0, 12)) {
+      const hx = (k.c % cw) * FAN_CELL + FAN_CELL / 2
+      const hy = ((k.c / cw) | 0) * FAN_CELL + FAN_CELL / 2
+      if (out.some((f) => Math.hypot(f.hx - hx, f.hy - hy) < expected * 0.5 || inSector(f, hx, hy))) continue
+      // Edge energy along each ray from the hinge (edges lying along the ray), and whiteness.
+      for (let a = 0; a < N; a++) {
+        const th = (a / N) * 2 * Math.PI
+        const dx = Math.cos(th)
+        const dy = Math.sin(th)
+        let sum = 0
+        let cnt = 0
+        let ws = 0
+        for (let d = expected * 0.3; d <= expected * 0.95; d += 3) {
+          let best = 0
+          for (let o = -1; o <= 1; o++) {
+            const px = Math.round(hx + dx * d - dy * o)
+            const py = Math.round(hy + dy * d + dx * o)
+            if (px < 1 || py < 1 || px >= w - 1 || py >= h - 1) continue
+            const i = py * w + px
+            const v = Math.abs(gx[i] * -dy + gy[i] * dx) / norm
+            if (v > best) best = v
+            if (o === 0) ws += white[i]
+          }
+          sum += Math.min(1, best)
+          cnt++
+        }
+        prof[a] = cnt ? sum / cnt : 0
+        wh[a] = cnt ? ws / cnt : 0
+      }
+      let peak = 0
+      for (let a = 0; a < N; a++) {
+        sm[a] = (prof[(a + N - 1) % N] + prof[a] + prof[(a + 1) % N]) / 3
+        peak = Math.max(peak, sm[a])
+      }
+      const lvl = Math.max(0.12, peak * 0.45)
+      // The longest run of rays with edges along them, allowing short gaps.
+      let bestStart = 0
+      let bestLen = 0
+      for (let st = 0; st < N; st++) {
+        if (sm[st] <= lvl || sm[(st + N - 1) % N] > lvl) continue
+        let len = 0
+        let gap = 0
+        while (len < N && (sm[(st + len) % N] > lvl || gap < 3)) {
+          gap = sm[(st + len) % N] > lvl ? 0 : gap + 1
+          len++
+        }
+        len -= gap
+        if (len > bestLen) {
+          bestLen = len
+          bestStart = st
+        }
+      }
+      const span = (bestLen / N) * 2 * Math.PI
+      if (span < FAN_MIN_SPAN) continue
+      let e = 0
+      let wsum = 0
+      for (let j = 0; j < bestLen; j++) {
+        e += sm[(bestStart + j) % N]
+        wsum += wh[(bestStart + j) % N]
+      }
+      if (e / bestLen < FAN_MIN_EDGE || wsum / bestLen < FAN_MIN_WHITE) continue
+      const from = (bestStart / N) * 2 * Math.PI
+      let tex = 0
+      let texN = 0
+      for (const rr of [0.5, 0.65, 0.8]) {
+        const rad = expected * rr
+        for (let th = from; th < from + span; th += 1 / rad) {
+          const px = Math.round(hx + Math.cos(th) * rad)
+          const py = Math.round(hy + Math.sin(th) * rad)
+          if (px < 1 || py < 1 || px >= w - 1 || py >= h - 1) continue
+          const i = py * w + px
+          tex += Math.min(1, Math.abs(gx[i] * -Math.sin(th) + gy[i] * Math.cos(th)) / norm)
+          texN++
+        }
+      }
+      const texture = texN ? tex / texN : 0
+      // A couple of cards spread apart (a Sybil's packets, say) are packets, not a fan.
+      if (texture < FAN_MIN_TEXTURE) continue
+      out.push({ hx, hy, from, to: from + span, radius: expected, texture })
+      if (out.length >= MAX_FANS) break
+    }
+    return out
+  }
+
+  /** Fans matched frame to frame by hinge, eased, and shown only once they have held for a moment. */
+  private trackFans(near: HandGeo[], expected: number): FanTrack[] {
+    const found = this.findFans(near, expected)
+    const used = new Set<number>()
+    const next: FanTrack[] = []
+    for (const f of found) {
+      let best: FanTrack | null = null
+      let bestD = expected * 0.6
+      for (const t of this.fanTracks) {
+        if (used.has(t.id)) continue
+        const d = Math.hypot(t.hx - f.hx, t.hy - f.hy)
+        if (d < bestD) {
+          bestD = d
+          best = t
+        }
+      }
+      if (best) {
+        used.add(best.id)
+        next.push({ ...smoothSector(best, f), id: best.id, hits: best.hits + 1, misses: 0 })
+      } else next.push({ ...f, id: this.nextId++, hits: 1, misses: 0 })
+    }
+    for (const t of this.fanTracks) {
+      if (!used.has(t.id) && t.misses < FAN_MISSES && t.hits >= FAN_CONFIRM) next.push({ ...t, misses: t.misses + 1 })
+    }
+    this.fanTracks = next
+    return next.filter((t) => t.hits >= FAN_CONFIRM)
+  }
+
   private normalised(r: Rect): Omit<Packet, 'id' | 'hand'> {
     return { cx: r.cx / this.w, cy: r.cy / this.h, angle: r.angle, length: r.length / this.h, width: r.width / this.h }
   }
@@ -553,6 +775,21 @@ export class CardTracker {
       this.lastGeoAge = 0
     } else this.lastGeoAge++
     const near = geo.length ? geo : this.lastGeoAge <= HAND_MEMORY ? this.lastGeo : []
+    const fans = this.trackFans(near, deck.length * h)
+    this.fans = fans.map((f) => {
+      let hand: 0 | 1 | null = null
+      let bestD = Infinity
+      for (const g of geo) {
+        for (const [x, y] of g.pts) {
+          const d = Math.hypot(x - f.hx, y - f.hy)
+          if (d < bestD) {
+            bestD = d
+            hand = g.slot
+          }
+        }
+      }
+      return { id: f.id, hx: f.hx / w, hy: f.hy / h, from: f.from, to: f.to, radius: f.radius / h, hand }
+    })
     // Expected long side: as calibrated. (Hand size would follow the deck towards and away from the
     // camera, but the tracker's hand sizes swing too much when fingers are hidden.)
     const expected = deck.length * h
@@ -567,7 +804,10 @@ export class CardTracker {
       if (area < expectedArea * MIN_AREA || area > expectedArea * MAX_AREA) continue
       if (fill < MIN_FILL) continue
       const fit = this.fitCard(rect, limits)
-      if (fit && fit.score >= DETECT_SCORE) found.push(fit.rect)
+      if (!fit || fit.score < DETECT_SCORE) continue
+      // A rectangle inside a fan is the fan's outline, not a packet.
+      if (fans.some((f) => inSector(f, fit.rect.cx, fit.rect.cy))) continue
+      found.push(fit.rect)
     }
 
     // Match to known packets so ids stay put and outlines glide; a packet missing for a frame or two is kept.
@@ -622,6 +862,32 @@ export class CardTracker {
 
 function mean(v: number[]) {
   return v.reduce((s, x) => s + x, 0) / v.length
+}
+
+/** Whether a point lies in the fan's sector (a little beyond its reach counts too). */
+function inSector(f: Sector, x: number, y: number) {
+  if (Math.hypot(x - f.hx, y - f.hy) > f.radius * 1.1) return false
+  const a = Math.atan2(y - f.hy, x - f.hx)
+  const rel = (((a - f.from) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)
+  return rel <= f.to - f.from
+}
+
+/** Eases a fan towards its new fit: the hinge glides, and the sector is eased by its middle and width. */
+function smoothSector(prev: Sector, next: Sector): Sector {
+  const k = 0.6
+  const mid = (s: Sector) => (s.from + s.to) / 2
+  let dm = mid(next) - mid(prev)
+  dm = Math.atan2(Math.sin(dm), Math.cos(dm))
+  const m = mid(prev) + dm * k
+  const span = (prev.to - prev.from) * (1 - k) + (next.to - next.from) * k
+  return {
+    hx: prev.hx + (next.hx - prev.hx) * k,
+    hy: prev.hy + (next.hy - prev.hy) * k,
+    from: m - span / 2,
+    to: m + span / 2,
+    radius: prev.radius + (next.radius - prev.radius) * k,
+    texture: prev.texture + (next.texture - prev.texture) * k,
+  }
 }
 
 /** Eases a track towards its new fit, so the outline glides instead of jittering. */

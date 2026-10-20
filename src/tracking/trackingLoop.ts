@@ -1,7 +1,7 @@
 import type { HandLandmarker } from '@mediapipe/tasks-vision'
 import type { CardTracker } from '../cards/cardTracker'
-import type { Packet } from '../cards/types'
-import { drawCards, drawHands } from './draw'
+import type { Fan, Packet } from '../cards/types'
+import { drawCards, drawFans, drawHands } from './draw'
 import { HandIdentity } from './handIdentity'
 import { RollingStats } from './stats'
 import type { Frame } from './types'
@@ -38,6 +38,7 @@ export class TrackingLoop {
   showWireframe = true
   private cardTick = 0
   private lastPackets: Packet[] = []
+  private lastFans: Fan[] = []
 
   constructor(video: HTMLVideoElement, canvas: HTMLCanvasElement, landmarker: HandLandmarker) {
     this.video = video
@@ -98,12 +99,17 @@ export class TrackingLoop {
       const cards = this.cards
       if (cards?.isCalibrating) cards.process(v, frame.hands)
       else if (cards?.ready) {
-        if (this.cardTick++ % 2 === 0 || !frame.hands.length) this.lastPackets = cards.process(v, frame.hands)
+        if (this.cardTick++ % 2 === 0 || !frame.hands.length) {
+          this.lastPackets = cards.process(v, frame.hands)
+          this.lastFans = cards.fans
+        }
         frame.cards = this.lastPackets
+        frame.fans = this.lastFans
       }
       if (this.showWireframe) {
         drawHands(this.ctx, frame.hands)
         if (frame.cards && this.showCards) drawCards(this.ctx, frame.cards)
+        if (frame.fans && this.showCards) drawFans(this.ctx, frame.fans)
       } else this.ctx.clearRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height)
       this.stats.push(frame, inferenceMs)
       for (const l of this.listeners) l(frame)

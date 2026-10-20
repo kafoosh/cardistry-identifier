@@ -122,6 +122,13 @@ function regionFor(frame: Frame, hand: HandLabel, slot?: 0 | 1): Box | null {
     y0 = Math.min(y0, p.cy - p.length / 2)
     y1 = Math.max(y1, p.cy + p.length / 2)
   }
+  for (const f of frame.fans ?? []) {
+    if (f.hand === null || !slots.has(f.hand)) continue
+    x0 = Math.min(x0, f.hx - f.radius)
+    x1 = Math.max(x1, f.hx + f.radius)
+    y0 = Math.min(y0, f.hy - f.radius)
+    y1 = Math.max(y1, f.hy + f.radius)
+  }
   const padX = (x1 - x0) * 0.12
   const padY = (y1 - y0) * 0.12
   return {
