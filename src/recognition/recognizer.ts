@@ -74,19 +74,27 @@ function rankMoves(
  * Matches templates against the end of a live window. Several encodings of
  * the same window can be passed (e.g. with each hand as the primary one);
  * each is also tried mirrored, so the move is found in either hand, and
- * each template keeps its best. Templates must already be in `project`'s encoding.
+ * each template keeps its best. Templates must already be encoded the way
+ * `project` then `weigh` (per move) encode the windows.
  */
 export function matchLive(
   windows: FeatureSequence[],
   templates: Template[],
   scaleFor: (moveName: string) => number,
   project: Project = identity,
+  weigh: (seq: FeatureSequence, moveName: string) => FeatureSequence = (seq) => seq,
 ): MoveScore[] {
   const eitherHand = windows.flatMap((w) => [project(w), project(mirrorFeatures(w))])
+  const perMove = new Map<string, FeatureSequence[]>()
+  const forMove = (move: string) => {
+    let ws = perMove.get(move)
+    if (!ws) perMove.set(move, (ws = eitherHand.map((w) => weigh(w, move))))
+    return ws
+  }
   return rankMoves(
     templates.map((t) => {
       let best = { t, distance: Infinity, startedAgoMs: 0, withCards: false }
-      for (const w of eitherHand) {
+      for (const w of forMove(t.moveName)) {
         const m = subsequenceDtw(w, t.features)
         if (m.distance < best.distance) {
           const msPerFrame = w.frames > 1 ? w.durationMs / (w.frames - 1) : 0

@@ -27,6 +27,7 @@ let takes: TakeSet | null = null
 let templates: Template[] = []
 let calibration: Calibration = { scale: new Map(), global: 1 }
 let project: Project = identity
+const weigh = (seq: FeatureSequence, move: string) => takes?.encode(seq, move) ?? seq
 
 self.onmessage = (e: MessageEvent<MatcherRequest>) => {
   const msg = e.data
@@ -51,10 +52,10 @@ self.onmessage = (e: MessageEvent<MatcherRequest>) => {
     const one = templates.filter((t) => t.hands === 1)
     const two = templates.filter((t) => t.hands === 2)
     const result: MatchResult = {
-      both: msg.query.both.length && two.length ? matchLive(msg.query.both, two, scaleFor, project) : [],
+      both: msg.query.both.length && two.length ? matchLive(msg.query.both, two, scaleFor, project, weigh) : [],
       single: msg.query.single.map(({ slot, window }) => ({
         slot,
-        scores: one.length ? matchLive([window], one, scaleFor, project) : [],
+        scores: one.length ? matchLive([window], one, scaleFor, project, weigh) : [],
       })),
     }
     self.postMessage({ type: 'match', id: msg.id, match: result, ms: performance.now() - t0 })

@@ -41,9 +41,9 @@ export interface SubsequenceMatch {
  * match must end at the query's last frame but may start anywhere. This is
  * what live identification needs ("did that move just finish?"). Matches
  * spanning less than three quarters or more than 1.8× the template's length are
- * rejected, so a single pose can't match a whole move. Query frames before the
- * longest allowed span are skipped: they can't be part of an accepted match,
- * and on a long live window that is most of the work.
+ * never considered, so a single pose can't match a whole move: starts too
+ * late are not allowed, and query frames before the longest allowed span are
+ * skipped (on a long live window that is most of the work).
  */
 const MIN_SPAN = 0.75
 const MAX_SPAN = 1.8
@@ -61,14 +61,25 @@ export function subsequenceDtw(query: FeatureSequence, template: FeatureSequence
   let curLen = new Float64Array(m)
   let curStart = new Int32Array(m)
   const first = Math.max(0, n - Math.floor(m * MAX_SPAN))
+  // Latest start that still leaves the match most of the template's time.
+  // Without it the cheapest path squeezes the whole template onto the last
+  // few frames, fails the span check, and a move that did play out scores
+  // nothing at all.
+  const lastStart = n - Math.ceil(m * MIN_SPAN)
   for (let i = first; i < n; i++) {
     for (let j = 0; j < m; j++) {
       const d = frameDist(query.data, i, template.data, j, stride, dims, withCards)
       if (j === 0) {
-        // Free start anywhere in the query.
-        cur[0] = d
-        curLen[0] = 1
-        curStart[0] = i
+        // Free start anywhere early enough; later, keep holding the template's first frame.
+        if (i <= lastStart || i === first) {
+          cur[0] = d
+          curLen[0] = 1
+          curStart[0] = i
+        } else {
+          cur[0] = prev[0] + d
+          curLen[0] = prevLen[0] + 1
+          curStart[0] = prevStart[0]
+        }
         continue
       }
       let best = cur[j - 1]
