@@ -84,10 +84,19 @@ function getTracker(lite: boolean) {
   }
   trackerLite = lite
   // `?cpu` in the URL forces the CPU delegate, for devices with a broken GPU path.
-  trackerPromise ??= loadHandTracker(!new URLSearchParams(location.search).has('cpu'), lite).catch((err) => {
-    trackerPromise = null
-    throw err
-  })
+  const preferGpu = !new URLSearchParams(location.search).has('cpu')
+  trackerPromise ??= loadHandTracker(preferGpu, lite)
+    .catch((err) => {
+      // The lighter model is a convenience: if this device won't load it, use the full one rather than no camera.
+      if (!lite) throw err
+      console.warn('Lite hand model failed, using the full model', err)
+      trackerLite = false
+      return loadHandTracker(preferGpu, false)
+    })
+    .catch((err) => {
+      trackerPromise = null
+      throw err
+    })
   return trackerPromise
 }
 
