@@ -76,6 +76,11 @@ function deleteKeys(): Record<string, string> {
 
 export const hasDeleteKey = (id: string) => id in deleteKeys()
 
+/** The name shown on shared recordings, remembered in this browser. */
+export const readNick = () => storageGet('cardistry.nickname') ?? ''
+
+export const rememberNick = (nickname: string) => storageSet('cardistry.nickname', nickname.trim())
+
 // ---------- requests ----------
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {

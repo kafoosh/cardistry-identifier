@@ -25,7 +25,11 @@ import {
   Recorder,
   type Capture,
 } from './recording/recorder'
-import { requestPersistentStorage, saveRecording } from './storage/db'
+import { uploadBatch } from './api/client'
+import { sharingEnabled } from './config'
+import { invalidateMoveCandidates } from './recording/moveNames'
+import type { LocalRecording } from './recording/types'
+import { markShared, requestPersistentStorage, saveRecording } from './storage/db'
 import { describeCameraError, openCamera, stopStream } from './tracking/camera'
 import { SLOT_COLOURS } from './tracking/draw'
 import { loadHandTracker, type LoadedTracker } from './tracking/handTracker'
@@ -395,38 +399,59 @@ export default function App() {
     setCapture(null)
     if (again) startRecording()
     else setRecState('ready')
-    setSavedNote(`Saving ${d.moveName}…`)
+    setSavedNote(d.share ? `Saving and sharing ${d.moveName}…` : `Saving ${d.moveName}…`)
     const { frames } = d
     const video = d.keepVideo ? capture.video : null
     void (async () => {
+      let rec: LocalRecording
       try {
-        await saveRecording(
-          {
-            id: crypto.randomUUID(),
-            moveName: d.moveName,
-            createdAt: Date.now(),
-            frames,
-            fps: d.durationMs > 0 ? ((frames.length - 1) * 1000) / d.durationMs : 0,
-            frameCount: frames.length,
-            durationMs: d.durationMs,
-            camera: facing,
-            cameraView: setup.cameraView,
-            dominantHand: setup.dominantHand,
-            device: describeDevice(),
-            videoWidth: videoSize.width,
-            videoHeight: videoSize.height,
-            qualityScore: qualityScore(frames),
-            longestGapMs: longestGapMs(frames),
-            hasVideo: Boolean(video),
-            videoStartMs: d.videoStartMs,
-            videoMimeType: video?.type,
-          },
-          video,
-        )
-        setSavedNote(`Saved ${d.moveName}.`)
+        rec = {
+          id: crypto.randomUUID(),
+          moveName: d.moveName,
+          createdAt: Date.now(),
+          frames,
+          fps: d.durationMs > 0 ? ((frames.length - 1) * 1000) / d.durationMs : 0,
+          frameCount: frames.length,
+          durationMs: d.durationMs,
+          camera: facing,
+          cameraView: setup.cameraView,
+          dominantHand: setup.dominantHand,
+          device: describeDevice(),
+          videoWidth: videoSize.width,
+          videoHeight: videoSize.height,
+          qualityScore: qualityScore(frames),
+          longestGapMs: longestGapMs(frames),
+          hasVideo: Boolean(video),
+          videoStartMs: d.videoStartMs,
+          videoMimeType: video?.type,
+        }
+        await saveRecording(rec, video)
         void requestPersistentStorage()
       } catch (err) {
         setSavedNote(`Couldn't save: ${err instanceof Error ? err.message : err}`)
+        return
+      }
+      if (!d.share) {
+        setSavedNote(`Saved ${d.moveName}.`)
+        return
+      }
+      // The take is safe on this device; sharing can fail without losing it.
+      try {
+        const [result] = await uploadBatch([rec], d.share.nickname, d.share.token)
+        if (!result.ok) throw new Error(result.error)
+        await markShared(rec.id, result.id)
+        invalidateMoveCandidates()
+        setSavedNote(
+          result.duplicate
+            ? `Saved ${d.moveName}. It was already in the library.`
+            : result.status === 'pending'
+              ? `Saved and shared ${d.moveName}. Tracking was patchy, so it waits for review.`
+              : `Saved and shared ${d.moveName}.`,
+        )
+      } catch (err) {
+        setSavedNote(
+          `Saved ${d.moveName} on this device but couldn't share it (${err instanceof Error ? err.message : err}). You can share it from My moves.`,
+        )
       }
     })()
   }
@@ -972,6 +997,7 @@ export default function App() {
           width={videoSize.width}
           height={videoSize.height}
           mirror={mirror}
+          shareable={sharingEnabled()}
           moveName={setup.moveName}
           onSave={save}
           onDiscard={() => {
