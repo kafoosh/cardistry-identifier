@@ -646,6 +646,20 @@ textarea {
   min-height: 0;
 }
 
+/* Share-on-save in the take review: a tick, one line on what goes public, and the nickname. */
+.share-on-save .check {
+  margin-bottom: 2px;
+}
+
+.share-on-save p {
+  margin: 0 0 0 26px;
+}
+
+.share-on-save input.nick {
+  width: 12em;
+  padding: 2px 6px;
+}
+
 .move-list {
   list-style: none;
   margin: 0;

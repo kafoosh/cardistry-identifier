@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { readNick, rememberNick } from '../api/client'
 import { detectActiveHands, keepHands } from '../recording/activeHands'
 import { longestGapMs, qualityScore, type Capture } from '../recording/recorder'
 import { sliceFrames } from '../recognition/motion'
@@ -7,6 +8,17 @@ import type { Frame } from '../tracking/types'
 import { MovePicker } from './MovePicker'
 import { ReplayCanvas, type ReplayHandle } from './ReplayCanvas'
 import { TrimBar } from './TrimBar'
+import { Turnstile } from './Turnstile'
+
+const SHARE_KEY = 'cardistry.shareOnSave'
+
+function readShare() {
+  try {
+    return localStorage.getItem(SHARE_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
 
 export interface SaveDetails {
   moveName: string
@@ -16,8 +28,9 @@ export interface SaveDetails {
   durationMs: number
   /** Frame time at which the kept video's time 0 falls, after trimming. */
   videoStartMs: number
+  /** Also upload the take to the shared library, with this spam-check token and nickname. */
+  share: { token: string; nickname: string } | null
 }
-
 
 interface Props {
   capture: Capture
@@ -25,13 +38,15 @@ interface Props {
   width: number
   height: number
   mirror: boolean
+  /** The shared library is set up, so Save can upload too. */
+  shareable: boolean
   /** `again` starts the next take straight away. */
   onSave: (details: SaveDetails, again: boolean) => void
   onDiscard: () => void
 }
 
 /** Shown after a take: replay it, check which hands count, and save or discard. */
-export function SaveSheet({ capture, moveName: declared, width, height, mirror, onSave, onDiscard }: Props) {
+export function SaveSheet({ capture, moveName: declared, width, height, mirror, shareable, onSave, onDiscard }: Props) {
   const [moveName, setMoveName] = useState(declared)
   const [editingName, setEditingName] = useState(!declared)
   const [keepVideo, setKeepVideo] = useState(true)
@@ -63,9 +78,47 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
       return next
     })
 
-  const save = (again: boolean) => {
-    if (canSave) onSave({ moveName: moveName.trim(), keepVideo, frames, durationMs, videoStartMs: capture.videoStartMs - trimBase }, again)
+  // Saving shares to the library too, unless switched off; the spam check runs
+  // quietly while the take is reviewed, so Save rarely has to wait for it.
+  const [share, setShare] = useState(readShare)
+  const sharing = shareable && share
+  const [nickname, setNickname] = useState(readNick)
+  const [editingNick, setEditingNick] = useState(false)
+  const [token, setToken] = useState<string | null>(null)
+  const [shareError, setShareError] = useState('')
+  /** A Save tapped before the spam check finished: whether it was "record another". */
+  const [waiting, setWaiting] = useState<boolean | null>(null)
+
+  const toggleShare = (on: boolean) => {
+    setShare(on)
+    try {
+      localStorage.setItem(SHARE_KEY, on ? '1' : '0')
+    } catch {
+      // Not remembered in private mode.
+    }
   }
+
+  const send = (again: boolean, shareToken: string | null) => {
+    if (sharing) rememberNick(nickname)
+    const share = sharing && shareToken !== null ? { token: shareToken, nickname: nickname.trim() } : null
+    onSave({ moveName: moveName.trim(), keepVideo, frames, durationMs, videoStartMs: capture.videoStartMs - trimBase, share }, again)
+  }
+
+  const save = (again: boolean) => {
+    if (!canSave) return
+    if (sharing && token === null && !shareError) setWaiting(again)
+    else send(again, token)
+  }
+
+  useEffect(() => {
+    if (waiting === null) return
+    if (!sharing) send(waiting, null)
+    else if (token !== null) send(waiting, token)
+    // The check failed: save on this device rather than lose the take.
+    else if (shareError) send(waiting, null)
+    // Fires once the token (or an error) arrives for a waiting Save, or sharing is switched off.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waiting, token, shareError, sharing])
 
   return (
     <div className="sheet-backdrop">
@@ -140,13 +193,46 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
           </label>
         )}
 
+        {shareable && (
+          <div className="share-on-save">
+            <label className="check">
+              <input type="checkbox" checked={share} onChange={(e) => toggleShare(e.target.checked)} />
+              Share to the library
+            </label>
+            {share && (
+              <p className="small muted">
+                Public: the hand wireframe and card outlines, never video. Shared as{' '}
+                {editingNick ? (
+                  <input
+                    className="nick"
+                    value={nickname}
+                    onChange={(e) => setNickname(e.target.value)}
+                    maxLength={30}
+                    placeholder="Anonymous"
+                    aria-label="Nickname"
+                    autoFocus
+                  />
+                ) : (
+                  <button className="link" onClick={() => setEditingNick(true)}>
+                    {nickname.trim() || 'Anonymous'}
+                  </button>
+                )}
+              </p>
+            )}
+            {share && <Turnstile onToken={setToken} onError={setShareError} />}
+            {share && shareError && <p className="small error">{shareError} Saving keeps it on this device.</p>}
+          </div>
+        )}
+
         <div className="sheet-actions">
-          <button onClick={onDiscard}>Discard</button>
-          <button onClick={() => save(false)} disabled={!canSave}>
-            Save
+          <button onClick={onDiscard} disabled={waiting !== null}>
+            Discard
           </button>
-          <button className="primary" onClick={() => save(true)} disabled={!canSave}>
-            Save &amp; record another
+          <button onClick={() => save(false)} disabled={!canSave || waiting !== null}>
+            {waiting === false ? 'Checking…' : 'Save'}
+          </button>
+          <button className="primary" onClick={() => save(true)} disabled={!canSave || waiting !== null}>
+            {waiting === true ? 'Checking…' : <>Save &amp; record another</>}
           </button>
         </div>
       </div>

@@ -1,18 +1,8 @@
 import { useRef, useState } from 'react'
-import { MAX_BATCH, uploadBatch, type BatchItemResult } from '../api/client'
+import { MAX_BATCH, readNick, rememberNick, uploadBatch, type BatchItemResult } from '../api/client'
 import { invalidateMoveCandidates } from '../recording/moveNames'
 import type { LocalRecording } from '../recording/types'
 import { Turnstile } from './Turnstile'
-
-const NICK_KEY = 'cardistry.nickname'
-
-function readNick() {
-  try {
-    return localStorage.getItem(NICK_KEY) ?? ''
-  } catch {
-    return ''
-  }
-}
 
 export interface ShareOutcome {
   recording: LocalRecording
@@ -57,11 +47,7 @@ export function ShareSheet({ recordings, onDone, onClose }: Props) {
     if (token === null) return
     setBusy(true)
     setError('')
-    try {
-      localStorage.setItem(NICK_KEY, nickname.trim())
-    } catch {
-      // Not remembered in private mode.
-    }
+    rememberNick(nickname)
     const outcomes: ShareOutcome[] = []
     try {
       let current: string = token
