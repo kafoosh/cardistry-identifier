@@ -3,6 +3,8 @@ import type { Frame } from '../tracking/types'
 
 /** Long enough to repeat a move several times in one take. */
 export const MAX_RECORDING_MS = 30_000
+/** How long to wait for the video clip to finalise before giving up on it. */
+const STOP_TIMEOUT_MS = 1500
 
 export interface Capture {
   frames: Frame[]
@@ -91,12 +93,19 @@ export class Recorder {
     if (!media || media.state === 'inactive') return Promise.resolve({ frames, durationMs, video: null, videoStartMs })
     return new Promise((resolve) => {
       this.resolveStop = resolve
-      media.onstop = () => {
+      const finish = () => {
         const video = this.chunks.length ? new Blob(this.chunks, { type: media.mimeType }) : null
         this.resolveStop?.({ frames, durationMs, video, videoStartMs })
         this.resolveStop = null
       }
-      media.stop()
+      media.onstop = finish
+      // Some browsers never fire stop; don't let that leave the take stuck.
+      window.setTimeout(finish, STOP_TIMEOUT_MS)
+      try {
+        media.stop()
+      } catch {
+        finish()
+      }
     })
   }
 

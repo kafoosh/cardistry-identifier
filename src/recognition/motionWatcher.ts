@@ -1,6 +1,6 @@
 import type { TrackingLoop } from '../tracking/trackingLoop'
 import type { Frame } from '../tracking/types'
-import { MotionTracker, type MotionSample } from './motion'
+import { MOTION_OFF, MOTION_ON, MotionTracker, type MotionSample } from './motion'
 
 const BUFFER_MS = 1500
 
@@ -12,7 +12,7 @@ type Listener = (sample: MotionSample, frame: Frame) => void
  * a recording that starts on motion can include the moment just before.
  */
 export class MotionWatcher {
-  latest: MotionSample = { t: 0, energy: 0, active: false, moving: false }
+  latest: MotionSample = { t: 0, energy: 0, active: false, moving: false, on: MOTION_ON, off: MOTION_OFF }
   private tracker = new MotionTracker()
   private buffer: Frame[] = []
   private listeners = new Set<Listener>()

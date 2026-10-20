@@ -1,26 +1,16 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type PointerEvent,
-} from "react";
-import { Library } from "./components/Library";
-import { CameraSettings } from "./components/CameraSettings";
-import { MovePicker } from "./components/MovePicker";
-import {
-  loadRecordSetup,
-  saveRecordSetup,
-  type RecordSetupValue,
-} from "./recording/recordSetup";
-import { SaveSheet, type SaveDetails } from "./components/SaveSheet";
-import { IdentifyGuess, IdentifyScores } from "./components/IdentifyPanel";
-import { SharedLibrary } from "./components/SharedLibrary";
-import { Identifier, type IdentifyState } from "./recognition/identifier";
-import { activeSpan, MOTION_ON } from "./recognition/motion";
-import { MotionWatcher } from "./recognition/motionWatcher";
-import { getMatcher } from "./recognition/shared";
-import { loadTemplates } from "./recognition/templates";
+import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react'
+import { Library } from './components/Library'
+import { CameraSettings } from './components/CameraSettings'
+import { MovePicker } from './components/MovePicker'
+import { loadRecordSetup, saveRecordSetup, type RecordSetupValue } from './recording/recordSetup'
+import { SaveSheet, type SaveDetails } from './components/SaveSheet'
+import { IdentifyGuess, IdentifyScores } from './components/IdentifyPanel'
+import { SharedLibrary } from './components/SharedLibrary'
+import { Identifier, type IdentifyState } from './recognition/identifier'
+import { activeSpan, MOTION_ON } from './recognition/motion'
+import { MotionWatcher } from './recognition/motionWatcher'
+import { getMatcher } from './recognition/shared'
+import { loadTemplates } from './recognition/templates'
 import {
   canRecordVideo,
   describeDevice,
@@ -29,40 +19,35 @@ import {
   qualityScore,
   Recorder,
   type Capture,
-} from "./recording/recorder";
-import { requestPersistentStorage, saveRecording } from "./storage/db";
-import {
-  describeCameraError,
-  hasMultipleCameras,
-  openCamera,
-  stopStream,
-} from "./tracking/camera";
-import { SLOT_COLOURS } from "./tracking/draw";
-import { loadHandTracker, type LoadedTracker } from "./tracking/handTracker";
-import type { TrackingStats } from "./tracking/stats";
-import { TrackingLoop } from "./tracking/trackingLoop";
-import type { CameraFacing, Handedness } from "./tracking/types";
-import type { CameraView, DominantHand } from "./recording/types";
+} from './recording/recorder'
+import { requestPersistentStorage, saveRecording } from './storage/db'
+import { describeCameraError, hasMultipleCameras, openCamera, stopStream } from './tracking/camera'
+import { SLOT_COLOURS } from './tracking/draw'
+import { loadHandTracker, type LoadedTracker } from './tracking/handTracker'
+import type { TrackingStats } from './tracking/stats'
+import { TrackingLoop } from './tracking/trackingLoop'
+import type { CameraFacing, Handedness } from './tracking/types'
+import type { CameraView, DominantHand } from './recording/types'
 
-type Phase = "idle" | "loading" | "live" | "error";
-type Tab = "live" | "library" | "shared";
+type Phase = 'idle' | 'loading' | 'live' | 'error'
+type Tab = 'live' | 'library' | 'shared'
 /** Saves an on/off preference; ignored in private mode. */
 function remember(key: string, on: boolean) {
   try {
-    localStorage.setItem(key, on ? "1" : "0");
+    localStorage.setItem(key, on ? '1' : '0')
   } catch {
     // Not persisted in private mode.
   }
 }
 
 /** Stillness that ends an automatic take, and the shortest take auto-stop allows. */
-const AUTO_STOP_STILL_MS = 1200;
-const AUTO_STOP_MIN_MS = 1000;
+const AUTO_STOP_STILL_MS = 1200
+const AUTO_STOP_MIN_MS = 1000
 
-type RecState = "ready" | "countdown" | "armed" | "recording" | "review";
-type Mode = "record" | "identify";
+type RecState = 'ready' | 'countdown' | 'armed' | 'recording' | 'review'
+type Mode = 'record' | 'identify'
 
-const COUNTDOWN_S = 3;
+const COUNTDOWN_S = 3
 
 const EMPTY_STATS: TrackingStats = {
   fps: 0,
@@ -70,283 +55,259 @@ const EMPTY_STATS: TrackingStats = {
   presence: [0, 0],
   confidence: [0, 0],
   dropouts: [0, 0],
-};
+}
 
-let trackerPromise: Promise<LoadedTracker> | null = null;
+let trackerPromise: Promise<LoadedTracker> | null = null
 function getTracker() {
   // `?cpu` in the URL forces the CPU delegate, for devices with a broken GPU path.
-  trackerPromise ??= loadHandTracker(
-    !new URLSearchParams(location.search).has("cpu"),
-  ).catch((err) => {
-    trackerPromise = null;
-    throw err;
-  });
-  return trackerPromise;
+  trackerPromise ??= loadHandTracker(!new URLSearchParams(location.search).has('cpu')).catch((err) => {
+    trackerPromise = null
+    throw err
+  })
+  return trackerPromise
 }
 
 export default function App() {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const loopRef = useRef<TrackingLoop | null>(null);
-  const recorderRef = useRef<Recorder | null>(null);
-  const watcherRef = useRef<MotionWatcher | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const loopRef = useRef<TrackingLoop | null>(null)
+  const recorderRef = useRef<Recorder | null>(null)
+  const watcherRef = useRef<MotionWatcher | null>(null)
 
-  const [tab, setTab] = useState<Tab>("live");
-  const [recState, setRecState] = useState<RecState>("ready");
-  const [countdown, setCountdown] = useState(COUNTDOWN_S);
-  const [elapsed, setElapsed] = useState(0);
-  const [capture, setCapture] = useState<Capture | null>(null);
-  const [setup, setSetupState] = useState<RecordSetupValue>(loadRecordSetup);
+  const [tab, setTab] = useState<Tab>('live')
+  const [recState, setRecState] = useState<RecState>('ready')
+  const [countdown, setCountdown] = useState(COUNTDOWN_S)
+  const [elapsed, setElapsed] = useState(0)
+  const [capture, setCapture] = useState<Capture | null>(null)
+  const [setup, setSetupState] = useState<RecordSetupValue>(loadRecordSetup)
   const setSetup = (v: RecordSetupValue) => {
-    setSetupState(v);
-    saveRecordSetup(v);
-  };
-  const [savedNote, setSavedNote] = useState("");
+    setSetupState(v)
+    saveRecordSetup(v)
+  }
+  const [savedNote, setSavedNote] = useState('')
   const [recordVideo, setRecordVideo] = useState(() => {
     try {
-      return localStorage.getItem("cardistry.recordVideo") === "1";
+      return localStorage.getItem('cardistry.recordVideo') === '1'
     } catch {
-      return false;
+      return false
     }
-  });
+  })
   const [autoStart, setAutoStart] = useState(() => {
     try {
-      return localStorage.getItem("cardistry.autoStart") !== "0";
+      return localStorage.getItem('cardistry.autoStart') !== '0'
     } catch {
-      return true;
+      return true
     }
-  });
-  const [motion, setMotion] = useState({ energy: 0, active: false });
-  const [mode, setMode] = useState<Mode>("record");
-  const [identify, setIdentify] = useState<IdentifyState | null>(null);
+  })
+  const [motion, setMotion] = useState({ energy: 0, active: false, on: MOTION_ON })
+  const [mode, setMode] = useState<Mode>('record')
+  const [identify, setIdentify] = useState<IdentifyState | null>(null)
   const [templateInfo, setTemplateInfo] = useState({
     templates: 0,
     moves: 0,
     shared: 0,
     sharedError: false,
-  });
-  const [sensitivity, setSensitivity] = useState(1);
-  const thresholdRef = useRef({ base: 1, sensitivity: 1 });
+  })
+  const [sensitivity, setSensitivity] = useState(1)
+  const thresholdRef = useRef({ base: 1, sensitivity: 1 })
   useEffect(() => {
-    thresholdRef.current.sensitivity = sensitivity;
-  }, [sensitivity]);
-  const [videoSize, setVideoSize] = useState({ width: 640, height: 480 });
+    thresholdRef.current.sensitivity = sensitivity
+  }, [sensitivity])
+  const [videoSize, setVideoSize] = useState({ width: 640, height: 480 })
 
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [error, setError] = useState("");
-  const [facing, setFacing] = useState<CameraFacing>("user");
-  const [mirror, setMirror] = useState(true);
-  const [showGuide, setShowGuide] = useState(true);
-  const [canSwitch, setCanSwitch] = useState(false);
-  const [delegate, setDelegate] = useState("");
-  const [stats, setStats] = useState<TrackingStats>(EMPTY_STATS);
-  const [labels, setLabels] = useState<[Handedness | null, Handedness | null]>([
-    null,
-    null,
-  ]);
+  const [phase, setPhase] = useState<Phase>('idle')
+  const [error, setError] = useState('')
+  const [facing, setFacing] = useState<CameraFacing>('user')
+  const [mirror, setMirror] = useState(true)
+  const [showGuide, setShowGuide] = useState(true)
+  const [canSwitch, setCanSwitch] = useState(false)
+  const [delegate, setDelegate] = useState('')
+  const [stats, setStats] = useState<TrackingStats>(EMPTY_STATS)
+  const [labels, setLabels] = useState<[Handedness | null, Handedness | null]>([null, null])
 
   const stop = useCallback(() => {
-    recorderRef.current?.cancel();
-    recorderRef.current = null;
-    setRecState("ready");
-    setCapture(null);
-    watcherRef.current?.stop();
-    watcherRef.current = null;
-    loopRef.current?.stop();
-    loopRef.current = null;
-    stopStream(streamRef.current);
-    streamRef.current = null;
-  }, []);
+    recorderRef.current?.cancel()
+    recorderRef.current = null
+    setRecState('ready')
+    setCapture(null)
+    watcherRef.current?.stop()
+    watcherRef.current = null
+    loopRef.current?.stop()
+    loopRef.current = null
+    stopStream(streamRef.current)
+    streamRef.current = null
+  }, [])
 
   const start = useCallback(
     async (nextFacing: CameraFacing) => {
-      stop();
-      setPhase("loading");
-      setError("");
+      stop()
+      setPhase('loading')
+      setError('')
       try {
-        const [tracker, stream] = await Promise.all([
-          getTracker(),
-          openCamera(nextFacing),
-        ]);
-        streamRef.current = stream;
-        const video = videoRef.current!;
-        video.srcObject = stream;
-        await video.play();
-        setDelegate(tracker.delegate);
-        setFacing(nextFacing);
-        setMirror(nextFacing === "user");
-        const loop = new TrackingLoop(
-          video,
-          canvasRef.current!,
-          tracker.landmarker,
-        );
+        const [tracker, stream] = await Promise.all([getTracker(), openCamera(nextFacing)])
+        streamRef.current = stream
+        const video = videoRef.current!
+        video.srcObject = stream
+        await video.play()
+        setDelegate(tracker.delegate)
+        setFacing(nextFacing)
+        setMirror(nextFacing === 'user')
+        const loop = new TrackingLoop(video, canvasRef.current!, tracker.landmarker)
         loop.onFrame((f) => {
           setLabels((prev) => {
-            const next: [Handedness | null, Handedness | null] = [null, null];
-            for (const h of f.hands) next[h.slot] = h.handedness;
-            return prev[0] === next[0] && prev[1] === next[1] ? prev : next;
-          });
-        });
-        loop.start();
-        loopRef.current = loop;
-        watcherRef.current = new MotionWatcher(loop);
-        setPhase("live");
-        setCanSwitch(await hasMultipleCameras());
+            const next: [Handedness | null, Handedness | null] = [null, null]
+            for (const h of f.hands) next[h.slot] = h.handedness
+            return prev[0] === next[0] && prev[1] === next[1] ? prev : next
+          })
+        })
+        loop.start()
+        loopRef.current = loop
+        watcherRef.current = new MotionWatcher(loop)
+        setPhase('live')
+        setCanSwitch(await hasMultipleCameras())
       } catch (err) {
-        stop();
-        setError(describeCameraError(err));
-        setPhase("error");
+        stop()
+        setError(describeCameraError(err))
+        setPhase('error')
       }
     },
     [stop],
-  );
+  )
 
   useEffect(() => {
-    if (phase !== "live") return;
+    if (phase !== 'live') return
     const id = setInterval(() => {
-      if (loopRef.current) setStats(loopRef.current.stats.read());
-    }, 500);
-    return () => clearInterval(id);
-  }, [phase]);
+      if (loopRef.current) setStats(loopRef.current.stats.read())
+    }, 500)
+    return () => clearInterval(id)
+  }, [phase])
 
-  useEffect(() => stop, [stop]);
+  useEffect(() => stop, [stop])
 
   useEffect(() => {
-    if (phase !== "live") return;
+    if (phase !== 'live') return
     const id = setInterval(() => {
-      const m = watcherRef.current?.latest;
-      if (m) setMotion({ energy: m.energy, active: m.active });
-    }, 150);
-    return () => clearInterval(id);
-  }, [phase]);
+      const m = watcherRef.current?.latest
+      if (m) setMotion({ energy: m.energy, active: m.active, on: m.on })
+    }, 150)
+    return () => clearInterval(id)
+  }, [phase])
 
   const finishRecording = useCallback(async () => {
-    const rec = recorderRef.current;
-    if (!rec) return;
-    recorderRef.current = null;
-    const raw = await rec.stop();
+    const rec = recorderRef.current
+    if (!rec) return
+    recorderRef.current = null
+    // Respond to the tap straight away; the clip can take a moment to finalise.
+    setRecState('review')
+    const raw = await rec.stop()
     // Suggest cutting the idle time before and after the move; the review sheet lets the user adjust it.
-    const span = activeSpan(raw.frames);
+    const span = activeSpan(raw.frames)
     const cap: Capture = {
       ...raw,
-      suggestedTrim:
-        span && span.endMs - span.startMs >= 300 ? span : undefined,
-    };
-    const v = videoRef.current;
-    if (v?.videoWidth)
-      setVideoSize({ width: v.videoWidth, height: v.videoHeight });
-    setCapture(cap);
-    setRecState("review");
-  }, []);
+      suggestedTrim: span && span.endMs - span.startMs >= 300 ? span : undefined,
+    }
+    const v = videoRef.current
+    if (v?.videoWidth) setVideoSize({ width: v.videoWidth, height: v.videoHeight })
+    setCapture(cap)
+    setRecState('review')
+  }, [])
 
   const beginCapture = useCallback(
-    (preroll: Parameters<Recorder["start"]>[1]) => {
-      const loop = loopRef.current;
-      const stream = streamRef.current;
-      if (!loop || !stream || recorderRef.current) return;
-      const rec = new Recorder(loop, stream, () => void finishRecording());
-      rec.start(recordVideo && canRecordVideo(), preroll);
-      recorderRef.current = rec;
-      setElapsed(0);
-      setRecState("recording");
+    (preroll: Parameters<Recorder['start']>[1]) => {
+      const loop = loopRef.current
+      const stream = streamRef.current
+      if (!loop || !stream || recorderRef.current) return
+      const rec = new Recorder(loop, stream, () => void finishRecording())
+      rec.start(recordVideo && canRecordVideo(), preroll)
+      recorderRef.current = rec
+      setElapsed(0)
+      setRecState('recording')
     },
     [finishRecording, recordVideo],
-  );
+  )
 
   const startRecording = useCallback(() => {
-    setSavedNote("");
-    setRecState("countdown");
-    setCountdown(COUNTDOWN_S);
-  }, []);
+    setSavedNote('')
+    setRecState('countdown')
+    setCountdown(COUNTDOWN_S)
+  }, [])
 
   // Countdown, then either wait for motion (auto) or start capturing.
   useEffect(() => {
-    if (recState !== "countdown") return;
+    if (recState !== 'countdown') return
     const id = setTimeout(() => {
-      if (countdown > 1) setCountdown((c) => c - 1);
-      else if (autoStart) setRecState("armed");
-      else beginCapture([]);
-    }, 1000);
-    return () => clearTimeout(id);
-  }, [recState, countdown, autoStart, beginCapture]);
+      if (countdown > 1) setCountdown((c) => c - 1)
+      else if (autoStart) setRecState('armed')
+      else beginCapture([])
+    }, 1000)
+    return () => clearTimeout(id)
+  }, [recState, countdown, autoStart, beginCapture])
 
   // Auto-start: wait for fresh finger motion, then record from just before it.
   // Motion already under way when arming (fidgeting during the countdown)
   // has to settle first, so a take never starts half-way through something.
   useEffect(() => {
-    const watcher = watcherRef.current;
-    if (recState !== "armed" || !watcher) return;
-    let settled = !watcher.latest.active;
+    const watcher = watcherRef.current
+    if (recState !== 'armed' || !watcher) return
+    let settled = !watcher.latest.active
     return watcher.onSample((s) => {
-      if (!s.active) settled = true;
-      else if (settled) beginCapture(watcher.recent(700));
-    });
-  }, [recState, beginCapture]);
+      if (!s.active) settled = true
+      else if (settled) beginCapture(watcher.recent(700))
+    })
+  }, [recState, beginCapture])
 
   // Auto-stop: once the fingers have been still for a while. Short holds
   // inside a move don't end the take, and the first second is never cut off.
   useEffect(() => {
-    const watcher = watcherRef.current;
-    if (recState !== "recording" || !autoStart || !watcher) return;
-    let stillSince: number | null = null;
+    const watcher = watcherRef.current
+    if (recState !== 'recording' || !autoStart || !watcher) return
+    let stillSince: number | null = null
     return watcher.onSample((s) => {
-      if (s.moving) stillSince = null;
-      else stillSince ??= s.t;
-      const elapsed = recorderRef.current?.elapsedMs ?? 0;
-      if (
-        stillSince !== null &&
-        s.t - stillSince >= AUTO_STOP_STILL_MS &&
-        elapsed >= AUTO_STOP_MIN_MS
-      )
-        void finishRecording();
-    });
-  }, [recState, autoStart, finishRecording]);
+      if (s.moving) stillSince = null
+      else stillSince ??= s.t
+      const elapsed = recorderRef.current?.elapsedMs ?? 0
+      if (stillSince !== null && s.t - stillSince >= AUTO_STOP_STILL_MS && elapsed >= AUTO_STOP_MIN_MS)
+        void finishRecording()
+    })
+  }, [recState, autoStart, finishRecording])
 
   useEffect(() => {
-    if (recState !== "recording") return;
-    const id = setInterval(
-      () => setElapsed(recorderRef.current?.elapsedMs ?? 0),
-      100,
-    );
-    return () => clearInterval(id);
-  }, [recState]);
+    if (recState !== 'recording') return
+    const id = setInterval(() => setElapsed(recorderRef.current?.elapsedMs ?? 0), 100)
+    return () => clearInterval(id)
+  }, [recState])
 
   const save = (d: SaveDetails, again: boolean) => {
-    if (!capture) return;
-    if (d.moveName !== setup.moveName)
-      setSetup({ ...setup, moveName: d.moveName });
+    if (!capture) return
+    if (d.moveName !== setup.moveName) setSetup({ ...setup, moveName: d.moveName })
     // Close the sheet straight away and write in the background.
-    setCapture(null);
-    if (again) startRecording();
-    else setRecState("ready");
+    setCapture(null)
+    if (again) startRecording()
+    else setRecState('ready')
     const takes = d.repeats ?? [
       {
         frames: d.frames,
         durationMs: d.durationMs,
         videoStartMs: d.videoStartMs,
       },
-    ];
-    const label =
-      takes.length > 1 ? `${takes.length} takes of ${d.moveName}` : d.moveName;
-    setSavedNote(`Saving ${label}…`);
-    const createdAt = Date.now();
+    ]
+    const label = takes.length > 1 ? `${takes.length} takes of ${d.moveName}` : d.moveName
+    setSavedNote(`Saving ${label}…`)
+    const createdAt = Date.now()
     void (async () => {
       try {
         for (const [i, take] of takes.entries()) {
-          const { frames } = take;
+          const { frames } = take
           // One copy of the clip is enough; repeats from the same take share it.
-          const video = d.keepVideo && i === 0 ? capture.video : null;
+          const video = d.keepVideo && i === 0 ? capture.video : null
           await saveRecording(
             {
               id: crypto.randomUUID(),
               moveName: d.moveName,
               createdAt: createdAt + i,
               frames,
-              fps:
-                take.durationMs > 0
-                  ? ((frames.length - 1) * 1000) / take.durationMs
-                  : 0,
+              fps: take.durationMs > 0 ? ((frames.length - 1) * 1000) / take.durationMs : 0,
               frameCount: frames.length,
               durationMs: take.durationMs,
               camera: facing,
@@ -362,254 +323,214 @@ export default function App() {
               videoMimeType: video?.type,
             },
             video,
-          );
+          )
         }
-        setSavedNote(`Saved ${label}.`);
-        void requestPersistentStorage();
+        setSavedNote(`Saved ${label}.`)
+        void requestPersistentStorage()
       } catch (err) {
-        setSavedNote(
-          `Couldn't save: ${err instanceof Error ? err.message : err}`,
-        );
+        setSavedNote(`Couldn't save: ${err instanceof Error ? err.message : err}`)
       }
-    })();
-  };
+    })()
+  }
 
   // Identify mode: load templates, estimate a threshold, then match live.
   useEffect(() => {
-    if (phase !== "live" || mode !== "identify" || !loopRef.current) return;
-    let identifier: Identifier | null = null;
-    let cancelled = false;
-    setIdentify(null);
+    if (phase !== 'live' || mode !== 'identify' || !loopRef.current) return
+    let identifier: Identifier | null = null
+    let cancelled = false
+    setIdentify(null)
     void (async () => {
-      const { templates, sharedError } = await loadTemplates();
-      if (cancelled || !loopRef.current) return;
-      const matcher = getMatcher();
-      const outliers = new Set(await matcher.setTemplates(templates));
-      const used = templates.filter((t) => !outliers.has(t.id));
+      const { templates, sharedError } = await loadTemplates()
+      if (cancelled || !loopRef.current) return
+      const matcher = getMatcher()
+      const outliers = new Set(await matcher.setTemplates(templates))
+      const used = templates.filter((t) => !outliers.has(t.id))
       setTemplateInfo({
         templates: used.length,
         moves: new Set(used.map((t) => t.moveName)).size,
-        shared: used.filter((t) => t.source === "shared").length,
+        shared: used.filter((t) => t.source === 'shared').length,
         sharedError,
-      });
-      thresholdRef.current.base = (await matcher.selfTest()).threshold;
-      if (cancelled || !loopRef.current) return;
-      if (!watcherRef.current) return;
+      })
+      thresholdRef.current.base = (await matcher.selfTest()).threshold
+      if (cancelled || !loopRef.current) return
+      if (!watcherRef.current) return
       identifier = new Identifier(
         loopRef.current,
         watcherRef.current,
         matcher,
         templates,
         () => {
-          const v = videoRef.current;
-          return v?.videoWidth ? v.videoWidth / v.videoHeight : 4 / 3;
+          const v = videoRef.current
+          return v?.videoWidth ? v.videoWidth / v.videoHeight : 4 / 3
         },
         () => thresholdRef.current.base * thresholdRef.current.sensitivity,
         setIdentify,
-      );
-    })();
+      )
+    })()
     return () => {
-      cancelled = true;
-      identifier?.stop();
-    };
-  }, [phase, mode]);
+      cancelled = true
+      identifier?.stop()
+    }
+  }, [phase, mode])
 
   // Remember whether the camera was running when leaving the Camera tab, so
   // coming back restarts it instead of showing the start screen again.
-  const resumeCameraRef = useRef(false);
+  const resumeCameraRef = useRef(false)
 
   const switchTab = (next: Tab) => {
-    if (next === tab) return;
-    if (next !== "live") {
-      resumeCameraRef.current = phase === "live";
-      stop();
-      setPhase("idle");
+    if (next === tab) return
+    if (next !== 'live') {
+      resumeCameraRef.current = phase === 'live'
+      stop()
+      setPhase('idle')
     } else if (resumeCameraRef.current) {
-      void start(facing);
+      void start(facing)
     }
-    setTab(next);
-  };
+    setTab(next)
+  }
 
   const goRecord = () => {
-    setMode("record");
-    setTab("live");
-    if (phase !== "live") void start(facing);
-  };
+    setMode('record')
+    setTab('live')
+    if (phase !== 'live') void start(facing)
+  }
 
-  const [showSettings, setShowSettings] = useState(false);
+  const [showSettings, setShowSettings] = useState(false)
 
   const changeMode = (m: Mode) => {
-    if (recState === "ready") setMode(m);
-  };
+    if (recState === 'ready') setMode(m)
+  }
 
   // Swipe across the camera view to switch between Record and Identify.
-  const swipeStart = useRef<{ x: number; y: number } | null>(null);
+  const swipeStart = useRef<{ x: number; y: number } | null>(null)
   const swipeHandlers = {
     onPointerDown: (e: PointerEvent) => {
-      swipeStart.current = { x: e.clientX, y: e.clientY };
+      swipeStart.current = { x: e.clientX, y: e.clientY }
     },
     onPointerUp: (e: PointerEvent) => {
-      const s0 = swipeStart.current;
-      swipeStart.current = null;
-      if (!s0) return;
-      const dx = e.clientX - s0.x;
-      const dy = e.clientY - s0.y;
-      if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-      changeMode(dx < 0 ? "identify" : "record");
+      const s0 = swipeStart.current
+      swipeStart.current = null
+      if (!s0) return
+      const dx = e.clientX - s0.x
+      const dy = e.clientY - s0.y
+      if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5) return
+      changeMode(dx < 0 ? 'identify' : 'record')
     },
     onPointerCancel: () => {
-      swipeStart.current = null;
+      swipeStart.current = null
     },
-  };
+  }
 
-  const live = phase === "live";
-  const lowFps = live && stats.fps > 0 && stats.fps < 20;
-  const losingHands =
-    live &&
-    stats.fps > 0 &&
-    Math.max(stats.presence[0], stats.presence[1]) < 0.6;
+  const live = phase === 'live'
+  const lowFps = live && stats.fps > 0 && stats.fps < 20
+  const losingHands = live && stats.fps > 0 && Math.max(stats.presence[0], stats.presence[1]) < 0.6
 
   return (
-    <div className={`app ${tab === "live" ? "app-camera" : ""}`}>
+    <div className={`app ${tab === 'live' ? 'app-camera' : ''}`}>
       <header className="topbar">
         <h1>Cardistry Identifier</h1>
         <nav className="tabs">
-          <button
-            className={tab === "live" ? "selected" : ""}
-            onClick={() => switchTab("live")}
-          >
+          <button className={tab === 'live' ? 'selected' : ''} onClick={() => switchTab('live')}>
             Camera
           </button>
-          <button
-            className={tab === "library" ? "selected" : ""}
-            onClick={() => switchTab("library")}
-          >
+          <button className={tab === 'library' ? 'selected' : ''} onClick={() => switchTab('library')}>
             My moves
           </button>
-          <button
-            className={tab === "shared" ? "selected" : ""}
-            onClick={() => switchTab("shared")}
-          >
+          <button className={tab === 'shared' ? 'selected' : ''} onClick={() => switchTab('shared')}>
             Library
           </button>
         </nav>
       </header>
 
-      {tab === "library" && (
+      {tab === 'library' && (
         <main className="library-wrap">
           <Library onRecordMore={goRecord} />
         </main>
       )}
 
-      {tab === "shared" && (
+      {tab === 'shared' && (
         <main className="library-wrap">
           <SharedLibrary />
         </main>
       )}
 
-      <main className="camera" hidden={tab !== "live"}>
+      <main className="camera" hidden={tab !== 'live'}>
         <div className="camera-top">
-          {live && mode === "record" && (
-            <fieldset className="what" disabled={recState !== "ready"}>
+          {live && mode === 'record' && (
+            <fieldset className="what" disabled={recState !== 'ready'}>
               <label className="field">
                 <span>What are you recording?</span>
-                <MovePicker
-                  value={setup.moveName}
-                  onChange={(moveName) => setSetup({ ...setup, moveName })}
-                />
+                <MovePicker value={setup.moveName} onChange={(moveName) => setSetup({ ...setup, moveName })} />
               </label>
             </fieldset>
           )}
-          {live && mode === "identify" && (
+          {live && mode === 'identify' && (
             <IdentifyGuess
               state={identify}
               templateCount={templateInfo.templates}
               moveCount={templateInfo.moves}
               sharedCount={templateInfo.shared}
               sharedError={templateInfo.sharedError}
-              onRecord={() => setMode("record")}
+              onRecord={() => setMode('record')}
             />
           )}
         </div>
 
-        <div className={`stage ${live ? "is-live" : ""}`} {...swipeHandlers}>
-          <video
-            ref={videoRef}
-            className={mirror ? "mirror" : ""}
-            playsInline
-            muted
-            autoPlay
-          />
-          <canvas ref={canvasRef} className={mirror ? "mirror" : ""} />
-          {live && recState === "countdown" && (
-            <div className="countdown">{countdown}</div>
+        <div className={`stage ${live ? 'is-live' : ''}`} {...swipeHandlers}>
+          <video ref={videoRef} className={mirror ? 'mirror' : ''} playsInline muted autoPlay />
+          <canvas ref={canvasRef} className={mirror ? 'mirror' : ''} />
+          {live && recState === 'countdown' && <div className="countdown">{countdown}</div>}
+          {live && recState === 'armed' && (
+            <div className="rec-indicator">Ready. Start the move whenever you like…</div>
           )}
-          {live && recState === "armed" && (
+          {live && recState === 'recording' && (
             <div className="rec-indicator">
-              Ready. Start the move whenever you like…
+              <span className="rec-dot" /> REC {(elapsed / 1000).toFixed(1)}s / {MAX_RECORDING_MS / 1000}s
             </div>
           )}
-          {live && recState === "recording" && (
-            <div className="rec-indicator">
-              <span className="rec-dot" /> REC {(elapsed / 1000).toFixed(1)}s /{" "}
-              {MAX_RECORDING_MS / 1000}s
-            </div>
-          )}
-          {live && showGuide && recState === "ready" && (
+          {live && showGuide && recState === 'ready' && (
             <div className="guide" aria-hidden="true">
               <span>Keep both hands and the deck inside the frame</span>
             </div>
           )}
-          {live && mode === "identify" && <IdentifyScores state={identify} />}
-          {live && savedNote && recState !== "recording" && (
-            <div className="toast">{savedNote}</div>
-          )}
+          {live && mode === 'identify' && <IdentifyScores state={identify} />}
+          {live && savedNote && recState !== 'recording' && <div className="toast">{savedNote}</div>}
           {live && (lowFps || losingHands) && (
             <div className="toast warn">
               {lowFps
-                ? "Tracking is slow. Close other tabs or apps, or try the other camera."
-                : "Losing your hands. Try more light or a plainer background."}
+                ? 'Tracking is slow. Close other tabs or apps, or try the other camera.'
+                : 'Losing your hands. Try more light or a plainer background.'}
             </div>
           )}
           {live && (
-            <div
-              className={`motion-strip ${motion.active ? "active" : ""}`}
-              title="Finger motion"
-            >
+            <div className={`motion-strip ${motion.active ? 'active' : ''}`} title="Finger motion">
               <span
                 style={{
-                  width: `${Math.min(100, (motion.energy / (MOTION_ON * 2.5)) * 100)}%`,
+                  width: `${Math.min(100, (motion.energy / (motion.on * 2.5)) * 100)}%`,
                 }}
               />
               <i style={{ left: `${100 / 2.5}%` }} />
             </div>
           )}
 
-          {phase !== "live" && (
+          {phase !== 'live' && (
             <div className="intro">
-              {phase === "loading" ? (
-                <p className="muted">
-                  Starting camera and loading the hand tracker…
-                </p>
+              {phase === 'loading' ? (
+                <p className="muted">Starting camera and loading the hand tracker…</p>
               ) : (
                 <>
                   <p>
-                    Track your hands live while you do cardistry. Prop your
-                    phone or laptop up so both hands are free and in view, with
-                    good light.
+                    Track your hands live while you do cardistry. Prop your phone or laptop up so both hands are free
+                    and in view, with good light.
                   </p>
-                  {phase === "error" && <p className="error">{error}</p>}
+                  {phase === 'error' && <p className="error">{error}</p>}
                   <div className="intro-actions">
-                    <button className="primary" onClick={() => start("user")}>
+                    <button className="primary" onClick={() => start('user')}>
                       Start camera
                     </button>
-                    <button onClick={() => start("environment")}>
-                      Use rear camera
-                    </button>
+                    <button onClick={() => start('environment')}>Use rear camera</button>
                   </div>
-                  <p className="muted small">
-                    Everything runs on your device. Nothing is uploaded.
-                  </p>
+                  <p className="muted small">Everything runs on your device. Nothing is uploaded.</p>
                 </>
               )}
             </div>
@@ -619,79 +540,62 @@ export default function App() {
         {live && (
           <div className="camera-bottom">
             <div className="mode-carousel" role="tablist" aria-label="Mode">
-              {(["record", "identify"] as const).map((m) => (
+              {(['record', 'identify'] as const).map((m) => (
                 <button
                   key={m}
                   role="tab"
                   aria-selected={mode === m}
-                  className={mode === m ? "selected" : ""}
+                  className={mode === m ? 'selected' : ''}
                   onClick={() => changeMode(m)}
-                  disabled={recState !== "ready"}
+                  disabled={recState !== 'ready'}
                 >
-                  {m === "record" ? "Record" : "Identify"}
+                  {m === 'record' ? 'Record' : 'Identify'}
                 </button>
               ))}
             </div>
             <div className="shutter-row">
               <button
                 className="round"
-                onClick={() =>
-                  start(facing === "user" ? "environment" : "user")
-                }
-                disabled={!canSwitch || recState !== "ready"}
+                onClick={() => start(facing === 'user' ? 'environment' : 'user')}
+                disabled={!canSwitch || recState !== 'ready'}
                 aria-label="Switch camera"
                 title="Switch camera"
               >
                 ⟲
               </button>
-              {mode === "record" ? (
+              {mode === 'record' ? (
                 <button
-                  className={`shutter ${recState === "recording" ? "is-recording" : ""} ${recState === "countdown" || recState === "armed" ? "is-waiting" : ""}`}
+                  className={`shutter ${recState === 'recording' ? 'is-recording' : ''} ${recState === 'countdown' || recState === 'armed' ? 'is-waiting' : ''}`}
                   onClick={() => {
-                    if (recState === "recording") void finishRecording();
-                    else if (recState === "countdown" || recState === "armed")
-                      setRecState("ready");
-                    else startRecording();
+                    if (recState === 'recording') void finishRecording()
+                    else if (recState === 'countdown' || recState === 'armed') setRecState('ready')
+                    else startRecording()
                   }}
-                  disabled={
-                    recState === "review" ||
-                    (recState === "ready" && !setup.moveName)
-                  }
-                  aria-label={
-                    recState === "recording"
-                      ? "Stop recording"
-                      : recState === "ready"
-                        ? "Record"
-                        : "Cancel"
-                  }
+                  disabled={recState === 'review' || (recState === 'ready' && !setup.moveName)}
+                  aria-label={recState === 'recording' ? 'Stop recording' : recState === 'ready' ? 'Record' : 'Cancel'}
                 >
                   <span />
                 </button>
               ) : (
                 <div className="shutter-placeholder small muted">Do a move</div>
               )}
-              <button
-                className="round"
-                onClick={() => setShowSettings(true)}
-                aria-label="Settings"
-                title="Settings"
-              >
+              <button className="round" onClick={() => setShowSettings(true)} aria-label="Settings" title="Settings">
                 ⚙
               </button>
             </div>
             <p className="shutter-hint small muted">
-              {mode === "identify"
-                ? "Swipe right to record"
-                : recState === "recording"
+              {mode === 'identify'
+                ? 'Swipe right to record'
+                : recState === 'recording'
                   ? autoStart
-                    ? "Stops when your fingers settle, or tap to stop"
-                    : "Tap to stop"
-                  : recState === "countdown"
-                    ? "Get ready… tap to cancel"
-                    : recState === "armed"
-                      ? "Starts when your fingers move. Tap to cancel"
+                    ? 'Stops when your fingers settle, or tap to stop'
+                    : 'Tap to stop'
+                  : recState === 'countdown'
+                    ? 'Get ready… tap to cancel'
+                    : recState === 'armed'
+                      ? 'Starts when your fingers move. Tap to cancel'
                       : !setup.moveName
-                        ? "Name the move above first"
+                        ? 'Name the move above first'
                         : autoStart
                           ? `Tap, then start ${setup.moveName} when ready. Swipe left to identify`
                           : `Tap to record ${setup.moveName}. Swipe left to identify`}
@@ -740,8 +644,8 @@ export default function App() {
               type="checkbox"
               checked={autoStart}
               onChange={(e) => {
-                setAutoStart(e.target.checked);
-                remember("cardistry.autoStart", e.target.checked);
+                setAutoStart(e.target.checked)
+                remember('cardistry.autoStart', e.target.checked)
               }}
             />
             Start and stop recording automatically when I move
@@ -752,8 +656,8 @@ export default function App() {
                 type="checkbox"
                 checked={recordVideo}
                 onChange={(e) => {
-                  setRecordVideo(e.target.checked);
-                  remember("cardistry.recordVideo", e.target.checked);
+                  setRecordVideo(e.target.checked)
+                  remember('cardistry.recordVideo', e.target.checked)
                 }}
               />
               Also record video
@@ -761,8 +665,7 @@ export default function App() {
           )}
           <label className="field slider">
             <span>
-              Identify sensitivity{" "}
-              <span className="tabular">{sensitivity.toFixed(1)}×</span>
+              Identify sensitivity <span className="tabular">{sensitivity.toFixed(1)}×</span>
             </span>
             <input
               type="range"
@@ -773,21 +676,15 @@ export default function App() {
               onChange={(e) => setSensitivity(Number(e.target.value))}
             />
           </label>
-          <p className="muted small">
-            Raise it if moves are missed, lower it if wrong moves pop up.
-          </p>
+          <p className="muted small">Raise it if moves are missed, lower it if wrong moves pop up.</p>
           <div className="controls">
-            <button onClick={() => setMirror((m) => !m)}>
-              {mirror ? "Unmirror" : "Mirror"}
-            </button>
-            <button onClick={() => setShowGuide((g) => !g)}>
-              {showGuide ? "Hide guide" : "Show guide"}
-            </button>
+            <button onClick={() => setMirror((m) => !m)}>{mirror ? 'Unmirror' : 'Mirror'}</button>
+            <button onClick={() => setShowGuide((g) => !g)}>{showGuide ? 'Hide guide' : 'Show guide'}</button>
             <button
               onClick={() => {
-                setShowSettings(false);
-                stop();
-                setPhase("idle");
+                setShowSettings(false)
+                stop()
+                setPhase('idle')
               }}
             >
               Stop camera
@@ -795,42 +692,33 @@ export default function App() {
           </div>
           <h3 className="small">Tracking</h3>
           <div className="badges">
-            <span className={`badge ${lowFps ? "warn" : ""}`}>
-              {stats.fps.toFixed(0)} fps
-            </span>
+            <span className={`badge ${lowFps ? 'warn' : ''}`}>{stats.fps.toFixed(0)} fps</span>
             <span className="badge">{stats.inferenceMs.toFixed(0)} ms</span>
             <span className="badge">{delegate}</span>
           </div>
           <div className="hands">
             {[0, 1].map((slot) => (
               <div className="hand" key={slot}>
-                <span
-                  className="dot"
-                  style={{ background: SLOT_COLOURS[slot] }}
-                />
+                <span className="dot" style={{ background: SLOT_COLOURS[slot] }} />
                 <div>
                   <strong>
-                    Hand {slot === 0 ? "A" : "B"}
-                    {labels[slot] ? ` · ${labels[slot]}` : ""}
+                    Hand {slot === 0 ? 'A' : 'B'}
+                    {labels[slot] ? ` · ${labels[slot]}` : ''}
                   </strong>
                   <div className="muted small">
-                    seen {(stats.presence[slot] * 100).toFixed(0)}% · conf{" "}
-                    {(stats.confidence[slot] * 100).toFixed(0)}% ·{" "}
-                    {stats.dropouts[slot]} drop
-                    {stats.dropouts[slot] === 1 ? "" : "s"}
+                    seen {(stats.presence[slot] * 100).toFixed(0)}% · conf {(stats.confidence[slot] * 100).toFixed(0)}%
+                    · {stats.dropouts[slot]} drop
+                    {stats.dropouts[slot] === 1 ? '' : 's'}
                   </div>
                 </div>
               </div>
             ))}
           </div>
-          <p className="muted small">
-            Last 5 seconds. Drops count how often a hand was lost and found
-            again.
-          </p>
+          <p className="muted small">Last 5 seconds. Drops count how often a hand was lost and found again.</p>
         </CameraSettings>
       )}
 
-      {capture && recState === "review" && (
+      {capture && recState === 'review' && (
         <SaveSheet
           capture={capture}
           width={videoSize.width}
@@ -839,11 +727,11 @@ export default function App() {
           moveName={setup.moveName}
           onSave={save}
           onDiscard={() => {
-            setCapture(null);
-            setRecState("ready");
+            setCapture(null)
+            setRecState('ready')
           }}
         />
       )}
     </div>
-  );
+  )
 }

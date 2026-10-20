@@ -15,6 +15,17 @@ const IDLE_AFTER_MS = 600
 const ON_FRAMES = 3
 const SMOOTH = 0.5
 const ENERGY_SMOOTH = 0.35
+/**
+ * Resting jitter differs by camera, light and distance, so the thresholds
+ * sit above this person's own noise floor: the low end of their energy
+ * while idle. ON/OFF never drop below the fixed values above.
+ */
+const FLOOR_SAMPLES = 300
+const FLOOR_PERCENTILE = 0.3
+const FLOOR_ON = 2.2
+const FLOOR_OFF = 1.6
+/** After this long "active" without a break, keep learning the floor anyway (constant jitter can hold it on). */
+const STUCK_ACTIVE_MS = 8000
 
 function relative(lm: Point3[]): Point3[] {
   const [wx, wy] = lm[0]
@@ -30,6 +41,9 @@ export interface MotionSample {
   active: boolean
   /** Actually moving on this frame: active and above the idle level. Use it to find where a move ends. */
   moving: boolean
+  /** Thresholds in use on this frame (they adapt to resting jitter). */
+  on: number
+  off: number
 }
 
 /** Incremental motion state with hysteresis; feed it frames in order. */
@@ -40,6 +54,23 @@ export class MotionTracker {
   private active = false
   private overCount = 0
   private underSince: number | null = null
+  private activeSince = 0
+  private idleEnergy: number[] = []
+  private floor = 0
+
+  /** Current start and stop thresholds, raised above this person's resting jitter. */
+  get thresholds() {
+    return { on: Math.max(MOTION_ON, this.floor * FLOOR_ON), off: Math.max(MOTION_OFF, this.floor * FLOOR_OFF) }
+  }
+
+  private learnFloor(energy: number) {
+    this.idleEnergy.push(energy)
+    if (this.idleEnergy.length > FLOOR_SAMPLES) this.idleEnergy.shift()
+    if (this.idleEnergy.length >= 20 && this.idleEnergy.length % 5 === 0) {
+      const sorted = [...this.idleEnergy].sort((a, b) => a - b)
+      this.floor = sorted[Math.floor((sorted.length - 1) * FLOOR_PERCENTILE)]
+    }
+  }
 
   push(f: Frame): MotionSample {
     const dt = this.lastT === null ? 0 : (f.t - this.lastT) / 1000
@@ -67,13 +98,16 @@ export class MotionTracker {
     }
     this.energy += (raw - this.energy) * ENERGY_SMOOTH
 
+    const { on, off } = this.thresholds
+    if (!this.active || f.t - this.activeSince > STUCK_ACTIVE_MS) this.learnFloor(this.energy)
     if (!this.active) {
-      this.overCount = this.energy > MOTION_ON ? this.overCount + 1 : 0
+      this.overCount = this.energy > on ? this.overCount + 1 : 0
       if (this.overCount >= ON_FRAMES) {
         this.active = true
+        this.activeSince = f.t
         this.underSince = null
       }
-    } else if (this.energy < MOTION_OFF) {
+    } else if (this.energy < off) {
       this.underSince ??= f.t
       if (f.t - this.underSince >= IDLE_AFTER_MS) {
         this.active = false
@@ -82,7 +116,7 @@ export class MotionTracker {
     } else {
       this.underSince = null
     }
-    return { t: f.t, energy: this.energy, active: this.active, moving: this.active && this.energy >= MOTION_OFF }
+    return { t: f.t, energy: this.energy, active: this.active, moving: this.active && this.energy >= off, on, off }
   }
 }
 
