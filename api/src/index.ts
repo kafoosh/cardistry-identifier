@@ -1,4 +1,5 @@
 import { MAX_DURATION_MS, validateSequence, type WireSequence } from '../../src/shared/sequence'
+import { cleanMeta, cleanText, recordingStats, slugify } from '../../src/shared/recordingStats'
 
 export interface Env {
   DB: D1Database
@@ -8,9 +9,6 @@ export interface Env {
 }
 
 const MAX_BODY_BYTES = 1_500_000
-const CAMERA_VIEWS = new Set(['front', 'top-down', 'side'])
-const HANDEDNESS = new Set(['right-dominant', 'left-dominant'])
-const CAMERAS = new Set(['user', 'environment'])
 
 class HttpError extends Error {
   status: number
@@ -52,16 +50,6 @@ function randomKey(bytes = 24) {
   return btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-export function slugify(s: string) {
-  return s
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 60)
-}
-
 async function gzip(text: string): Promise<ArrayBuffer> {
   const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'))
   return new Response(stream).arrayBuffer()
@@ -69,16 +57,6 @@ async function gzip(text: string): Promise<ArrayBuffer> {
 
 const isUuid = (s: unknown): s is string =>
   typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
-
-/** Trims user text, strips control characters and caps its length. */
-const cleanText = (s: unknown, max: number) =>
-  typeof s === 'string'
-    ? [...s]
-        .filter((c) => c.charCodeAt(0) >= 32 && c.charCodeAt(0) !== 127)
-        .join('')
-        .trim()
-        .slice(0, max)
-    : ''
 
 async function verifyTurnstile(env: Env, token: unknown, ip: string | null) {
   const secret = env.TURNSTILE_SECRET?.trim()
@@ -325,44 +303,15 @@ async function storeRecording(env: Env, item: UploadItem, deviceId: string, nick
   const frames = seq.frames
   const durationMs = frames[frames.length - 1][0] - frames[0][0]
   if (durationMs > MAX_DURATION_MS) throw new HttpError(422, 'Recording too long')
-  const fps = durationMs > 0 ? ((frames.length - 1) * 1000) / durationMs : 0
-  let withHand = 0
-  let scoreSum = 0
-  let handCount = 0
-  for (const [, hands] of frames) {
-    if (hands.length) withHand++
-    for (const h of hands) {
-      scoreSum += h[2]
-      handCount++
-    }
-  }
-  const quality = (withHand / frames.length) * (handCount ? scoreSum / handCount : 0)
-  let longestGap = 0
-  for (const slot of [0, 1]) {
-    let last: number | null = null
-    for (const [t, hands] of frames) {
-      if (hands.some((h) => h[0] === slot)) {
-        if (last !== null) longestGap = Math.max(longestGap, t - last)
-        last = t
-      }
-    }
-  }
-  const interval = frames.length > 1 ? durationMs / (frames.length - 1) : 0
-  if (longestGap <= interval * 1.5) longestGap = 0
-
-  const meta = item.meta ?? {}
-  const cameraView = CAMERA_VIEWS.has(meta.cameraView ?? '') ? meta.cameraView! : null
-  const handedness = HANDEDNESS.has(meta.handedness ?? '') ? meta.handedness! : null
-  const camera = CAMERAS.has(meta.camera ?? '') ? meta.camera! : null
-  const width = Number.isInteger(meta.width) && meta.width! > 0 && meta.width! <= 8192 ? meta.width! : null
-  const height = Number.isInteger(meta.height) && meta.height! > 0 && meta.height! <= 8192 ? meta.height! : null
+  const stats = recordingStats(seq)
+  const meta = cleanMeta(item.meta)
 
   const move = await resolveMove(env, item.moveName ?? '', deviceId)
   const id = crypto.randomUUID()
   const deleteKey = randomKey()
   const gz = await gzip(seqJson)
   // Low-quality recordings are kept but held back until reviewed.
-  const status = quality >= 0.6 ? 'approved' : 'pending'
+  const status = stats.status
   const now = Date.now()
 
   await env.DB.batch([
@@ -377,17 +326,17 @@ async function storeRecording(env: Env, item: UploadItem, deviceId: string, nick
       deviceId,
       await sha256Hex(deleteKey),
       nickname || null,
-      Math.round(fps * 10) / 10,
-      frames.length,
-      durationMs,
-      handedness,
-      cameraView,
-      camera,
-      cleanText(meta.device, 40) || null,
-      width,
-      height,
-      Math.round(quality * 1000) / 1000,
-      longestGap,
+      stats.fps,
+      stats.frameCount,
+      stats.durationMs,
+      meta.handedness,
+      meta.cameraView,
+      meta.camera,
+      meta.device,
+      meta.width,
+      meta.height,
+      stats.quality,
+      stats.longestGap,
       gz.byteLength,
       status,
       now,
