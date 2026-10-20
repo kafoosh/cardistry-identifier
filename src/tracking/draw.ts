@@ -1,4 +1,5 @@
 import { HAND_CONNECTIONS } from './handTracker'
+import type { Packet } from '../cards/types'
 import type { TrackedHand } from './types'
 
 export const SLOT_COLOURS = ['#2dd4bf', '#fbbf24'] as const
@@ -38,5 +39,27 @@ export function drawHands(ctx: CanvasRenderingContext2D, hands: TrackedHand[]) {
       ctx.fillStyle = FINGERTIPS.has(i) ? '#ffffff' : colour
       ctx.fill()
     }
+  }
+}
+
+/** Card packets as rotated boxes in the colour of the hand holding them (white when loose). */
+export function drawCards(ctx: CanvasRenderingContext2D, packets: Packet[]) {
+  const { width: w, height: h } = ctx.canvas
+  const unit = Math.max(w, h) / 640
+  for (const p of packets) {
+    const cx = p.cx * w
+    const cy = p.cy * h
+    const hl = (p.length * h) / 2
+    const hw = (p.width * h) / 2
+    const c = Math.cos(p.angle)
+    const s = Math.sin(p.angle)
+    ctx.save()
+    ctx.translate(cx, cy)
+    ctx.rotate(Math.atan2(s, c))
+    ctx.strokeStyle = p.hand === null ? '#ffffff' : SLOT_COLOURS[p.hand]
+    ctx.lineWidth = 2 * unit
+    ctx.setLineDash([6 * unit, 4 * unit])
+    ctx.strokeRect(-hl, -hw, hl * 2, hw * 2)
+    ctx.restore()
   }
 }

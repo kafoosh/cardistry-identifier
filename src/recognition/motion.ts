@@ -24,6 +24,8 @@ const FLOOR_SAMPLES = 300
 const FLOOR_PERCENTILE = 0.3
 const FLOOR_ON = 2.2
 const FLOOR_OFF = 1.6
+/** Ceiling on the learned floor, so someone who never rests can still trigger motion. */
+const MAX_FLOOR = 1
 /** After this long "active" without a break, keep learning the floor anyway (constant jitter can hold it on). */
 const STUCK_ACTIVE_MS = 8000
 
@@ -68,7 +70,7 @@ export class MotionTracker {
     if (this.idleEnergy.length > FLOOR_SAMPLES) this.idleEnergy.shift()
     if (this.idleEnergy.length >= 20 && this.idleEnergy.length % 5 === 0) {
       const sorted = [...this.idleEnergy].sort((a, b) => a - b)
-      this.floor = sorted[Math.floor((sorted.length - 1) * FLOOR_PERCENTILE)]
+      this.floor = Math.min(MAX_FLOOR, sorted[Math.floor((sorted.length - 1) * FLOOR_PERCENTILE)])
     }
   }
 
@@ -148,7 +150,7 @@ export function activeSpan(frames: Frame[]): { startMs: number; endMs: number } 
 export function sliceFrames(frames: Frame[], startMs: number, endMs: number): Frame[] {
   const kept = frames.filter((f) => f.t >= startMs && f.t <= endMs)
   const base = kept.length ? kept[0].t : 0
-  return kept.map((f) => ({ t: f.t - base, hands: f.hands }))
+  return kept.map((f) => ({ ...f, t: f.t - base }))
 }
 
 /** Cuts idle time off both ends and rebases times to start at 0. Returns the trimmed frames and how much was cut from the start. */
@@ -158,5 +160,5 @@ export function trimIdle(frames: Frame[]): { frames: Frame[]; cutStartMs: number
   const kept = frames.filter((f) => f.t >= span.startMs && f.t <= span.endMs)
   if (kept.length < 10) return { frames, cutStartMs: 0 }
   const base = kept[0].t
-  return { frames: kept.map((f) => ({ t: f.t - base, hands: f.hands })), cutStartMs: base - frames[0].t }
+  return { frames: kept.map((f) => ({ ...f, t: f.t - base })), cutStartMs: base - frames[0].t }
 }

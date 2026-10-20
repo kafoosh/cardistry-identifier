@@ -1,5 +1,7 @@
 import type { HandLandmarker } from '@mediapipe/tasks-vision'
-import { drawHands } from './draw'
+import type { CardTracker } from '../cards/cardTracker'
+import type { Packet } from '../cards/types'
+import { drawCards, drawHands } from './draw'
 import { HandIdentity } from './handIdentity'
 import { RollingStats } from './stats'
 import type { Frame } from './types'
@@ -29,6 +31,11 @@ export class TrackingLoop {
   private video: VideoWithRvfc
   private ctx: CanvasRenderingContext2D
   private landmarker: HandLandmarker
+  /** Card tracking, when switched on. Runs every other frame; frames in between reuse the last packets. */
+  cards: CardTracker | null = null
+  showCards = true
+  private cardTick = 0
+  private lastPackets: Packet[] = []
 
   constructor(video: HTMLVideoElement, canvas: HTMLCanvasElement, landmarker: HandLandmarker) {
     this.video = video
@@ -86,7 +93,12 @@ export class TrackingLoop {
       const inferenceMs = performance.now() - t0
       const t = now - this.startTime
       const frame: Frame = { t, hands: this.identity.assign(result, t) }
+      if (this.cards) {
+        if (this.cardTick++ % 2 === 0 || !frame.hands.length) this.lastPackets = this.cards.process(v, frame.hands)
+        frame.cards = this.lastPackets
+      }
       drawHands(this.ctx, frame.hands)
+      if (frame.cards && this.showCards) drawCards(this.ctx, frame.cards)
       this.stats.push(frame, inferenceMs)
       for (const l of this.listeners) l(frame)
     }

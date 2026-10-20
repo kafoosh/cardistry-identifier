@@ -1,4 +1,4 @@
-import { dtw, subsequenceDtw } from './dtw'
+import { bothHaveCards, dtw, subsequenceDtw } from './dtw'
 import type { FeatureSequence } from './features'
 
 export interface Template {
@@ -19,15 +19,20 @@ export interface MoveScore {
   templateId: string
   /** For live matches: how long ago the match started, ms. */
   startedAgoMs?: number
+  /** The confidence combines finger and card tracking (both sides had card data). */
+  withCards?: boolean
 }
 
 /** Used until there are enough recordings to estimate a threshold from data. */
 export const DEFAULT_THRESHOLD = 1.6
 
 /** Best distance per move, sorted best first. */
-function rankMoves(entries: { t: Template; distance: number; startedAgoMs?: number }[], threshold: number): MoveScore[] {
+function rankMoves(
+  entries: { t: Template; distance: number; startedAgoMs?: number; withCards?: boolean }[],
+  threshold: number,
+): MoveScore[] {
   const best = new Map<string, MoveScore>()
-  for (const { t, distance, startedAgoMs } of entries) {
+  for (const { t, distance, startedAgoMs, withCards } of entries) {
     if (!Number.isFinite(distance)) continue
     const prev = best.get(t.moveName)
     if (!prev || distance < prev.distance) {
@@ -37,6 +42,7 @@ function rankMoves(entries: { t: Template; distance: number; startedAgoMs?: numb
         strength: Math.max(0, Math.min(1, 1 - distance / threshold)),
         templateId: t.id,
         startedAgoMs,
+        withCards,
       })
     }
   }
@@ -59,12 +65,17 @@ export function classify(query: FeatureSequence, templates: Template[], threshol
 export function matchLive(windows: FeatureSequence[], templates: Template[], threshold: number): MoveScore[] {
   return rankMoves(
     templates.map((t) => {
-      let best = { t, distance: Infinity, startedAgoMs: 0 }
+      let best = { t, distance: Infinity, startedAgoMs: 0, withCards: false }
       for (const w of windows) {
         const m = subsequenceDtw(w, t.features)
         if (m.distance < best.distance) {
           const msPerFrame = w.frames > 1 ? w.durationMs / (w.frames - 1) : 0
-          best = { t, distance: m.distance, startedAgoMs: (w.frames - 1 - m.start) * msPerFrame }
+          best = {
+            t,
+            distance: m.distance,
+            startedAgoMs: (w.frames - 1 - m.start) * msPerFrame,
+            withCards: bothHaveCards(w, t.features),
+          }
         }
       }
       return best

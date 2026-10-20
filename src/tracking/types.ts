@@ -1,3 +1,5 @@
+import type { Packet } from '../cards/types'
+
 /** One landmark in normalised image coordinates (x, y in 0..1, z relative depth). */
 export type Point3 = [number, number, number]
 
@@ -19,6 +21,8 @@ export interface Frame {
   /** Milliseconds since the stream started. */
   t: number
   hands: TrackedHand[]
+  /** Card packets, when card tracking ran on this frame (undefined: tracking off, or an older recording). */
+  cards?: Packet[]
 }
 
 export type CameraFacing = 'user' | 'environment'

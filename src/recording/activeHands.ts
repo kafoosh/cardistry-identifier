@@ -63,5 +63,10 @@ export function detectActiveHands(frames: Frame[]): HandActivity[] {
 
 /** Copy of the frames with only the given hand slots kept. */
 export function keepHands(frames: Frame[], slots: Set<number>): Frame[] {
-  return frames.map((f) => ({ t: f.t, hands: f.hands.filter((h) => slots.has(h.slot)) }))
+  // Packets go with the hand holding them; loose ones stay.
+  return frames.map((f) => ({
+    ...f,
+    hands: f.hands.filter((h) => slots.has(h.slot)),
+    cards: f.cards?.filter((p) => p.hand === null || slots.has(p.hand)),
+  }))
 }

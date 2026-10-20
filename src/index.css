@@ -1269,3 +1269,132 @@ button.round {
 .repeat-length button:disabled {
   opacity: 0.4;
 }
+
+/* Identify */
+.identify-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.live-dot.on {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+.hand-boxes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+}
+
+.hand-box {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
+}
+
+.hand-box.both {
+  border-style: dashed;
+}
+
+.hand-box.confident {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.hand-box-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.hand-box-move {
+  font-size: 1rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hand-box.confident .hand-box-move {
+  color: var(--accent);
+}
+
+.hand-box-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.hand-box-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+.hand-box-meta {
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 1.2em;
+}
+
+.shutter-row.slim .round {
+  width: 40px;
+  height: 40px;
+  font-size: 1.1rem;
+}
+
+.shutter-row.slim .shutter-hint {
+  margin: 0;
+}
+
+.stage canvas.hud {
+  pointer-events: none;
+}
+
+.hud-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  min-height: 0;
+  padding: 3px 10px;
+  font: 600 0.75rem ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.1em;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--muted);
+}
+
+.hud-toggle.on {
+  color: #5ef2ff;
+  border-color: #5ef2ff;
+  box-shadow: 0 0 10px rgba(94, 242, 255, 0.5);
+}

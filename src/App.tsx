@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react'
 import { Library } from './components/Library'
+import { CardTracker } from './cards/cardTracker'
 import { CameraSettings } from './components/CameraSettings'
 import { MovePicker } from './components/MovePicker'
 import { loadRecordSetup, saveRecordSetup, type RecordSetupValue } from './recording/recordSetup'
 import { SaveSheet, type SaveDetails } from './components/SaveSheet'
-import { IdentifyGuess, IdentifyScores } from './components/IdentifyPanel'
+import { Hud } from './components/Hud'
+import { IdentifyBoxes, IdentifyStatus } from './components/IdentifyPanel'
 import { SharedLibrary } from './components/SharedLibrary'
 import { Identifier, type IdentifyState } from './recognition/identifier'
 import { activeSpan, MOTION_ON } from './recognition/motion'
@@ -31,6 +33,16 @@ import type { CameraView, DominantHand } from './recording/types'
 
 type Phase = 'idle' | 'loading' | 'live' | 'error'
 type Tab = 'live' | 'library' | 'shared'
+/** Reads an on/off preference saved with remember(). */
+function readPref(key: string, fallback: boolean): boolean {
+  try {
+    const v = localStorage.getItem(key)
+    return v === null ? fallback : v === '1'
+  } catch {
+    return fallback
+  }
+}
+
 /** Saves an on/off preference; ignored in private mode. */
 function remember(key: string, on: boolean) {
   try {
@@ -95,6 +107,10 @@ export default function App() {
       return false
     }
   })
+  const [trackCards, setTrackCards] = useState(() => readPref('cardistry.trackCards', true))
+  const [showCards, setShowCards] = useState(() => readPref('cardistry.showCards', true))
+  const [hud, setHud] = useState(() => readPref('cardistry.hud', true))
+  const cardTrackerRef = useRef<CardTracker | null>(null)
   const [autoStart, setAutoStart] = useState(() => {
     try {
       return localStorage.getItem('cardistry.autoStart') !== '0'
@@ -156,6 +172,12 @@ export default function App() {
         setFacing(nextFacing)
         setMirror(nextFacing === 'user')
         const loop = new TrackingLoop(video, canvasRef.current!, tracker.landmarker)
+        // ?debug exposes the latest frame for automated tests.
+        if (new URLSearchParams(location.search).has('debug')) {
+          const w = window as unknown as { __frame: unknown; __setIdentify: unknown }
+          loop.onFrame((f) => (w.__frame = f))
+          w.__setIdentify = setIdentify
+        }
         loop.onFrame((f) => {
           setLabels((prev) => {
             const next: [Handedness | null, Handedness | null] = [null, null]
@@ -163,6 +185,7 @@ export default function App() {
             return prev[0] === next[0] && prev[1] === next[1] ? prev : next
           })
         })
+        cardTrackerRef.current?.reset()
         loop.start()
         loopRef.current = loop
         watcherRef.current = new MotionWatcher(loop)
@@ -420,6 +443,14 @@ export default function App() {
 
   const [showSettings, setShowSettings] = useState(false)
 
+  // Apply the card toggles to the running loop.
+  useEffect(() => {
+    const loop = loopRef.current
+    if (!loop) return
+    loop.cards = trackCards ? (cardTrackerRef.current ??= new CardTracker()) : null
+    loop.showCards = showCards
+  }, [trackCards, showCards, phase])
+
   const changeMode = (m: Mode) => {
     if (recState === 'ready') setMode(m)
   }
@@ -488,7 +519,7 @@ export default function App() {
             </fieldset>
           )}
           {live && mode === 'identify' && (
-            <IdentifyGuess
+            <IdentifyStatus
               state={identify}
               templateCount={templateInfo.templates}
               moveCount={templateInfo.moves}
@@ -519,7 +550,19 @@ export default function App() {
               <span>Keep both hands and the deck inside the frame</span>
             </div>
           )}
-          {live && mode === 'identify' && <IdentifyScores state={identify} />}
+          {live && mode === 'identify' && hud && <Hud loopRef={loopRef} state={identify} mirror={mirror} />}
+          {live && mode === 'identify' && (
+            <button
+              className={`hud-toggle ${hud ? 'on' : ''}`}
+              onClick={() => {
+                setHud(!hud)
+                remember('cardistry.hud', !hud)
+              }}
+              aria-pressed={hud}
+            >
+              HUD
+            </button>
+          )}
           {live && savedNote && recState !== 'recording' && <div className="toast">{savedNote}</div>}
           {live && (lowFps || losingHands) && (
             <div className="toast warn">
@@ -579,7 +622,8 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <div className="shutter-row">
+            {mode === 'identify' && <IdentifyBoxes state={identify} mirror={mirror} />}
+            <div className={`shutter-row ${mode === 'identify' ? 'slim' : ''}`}>
               <button
                 className="round"
                 onClick={() => start(facing === 'user' ? 'environment' : 'user')}
@@ -610,16 +654,14 @@ export default function App() {
                   <span />
                 </button>
               ) : (
-                <div className="shutter-placeholder small muted">Do a move</div>
+                <p className="shutter-hint small muted">Do a move. Swipe right to record</p>
               )}
               <button className="round" onClick={() => setShowSettings(true)} aria-label="Settings" title="Settings">
                 ⚙
               </button>
             </div>
-            <p className="shutter-hint small muted">
-              {mode === 'identify'
-                ? 'Swipe right to record'
-                : recState === 'recording'
+            <p className="shutter-hint small muted" hidden={mode === 'identify'}>
+              {recState === 'recording'
                   ? autoStart
                     ? 'Stops when your fingers settle, or tap to stop'
                     : 'Tap to stop'
@@ -696,6 +738,41 @@ export default function App() {
               Also record video
             </label>
           )}
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={trackCards}
+              onChange={(e) => {
+                setTrackCards(e.target.checked)
+                remember('cardistry.trackCards', e.target.checked)
+              }}
+            />
+            Track cards too (experimental). Moves are matched on fingers and cards together
+          </label>
+          {trackCards && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={showCards}
+                onChange={(e) => {
+                  setShowCards(e.target.checked)
+                  remember('cardistry.showCards', e.target.checked)
+                }}
+              />
+              Show card boxes on the camera
+            </label>
+          )}
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={hud}
+              onChange={(e) => {
+                setHud(e.target.checked)
+                remember('cardistry.hud', e.target.checked)
+              }}
+            />
+            Futuristic overlay in Identify
+          </label>
           <label className="field slider">
             <span>
               Identify sensitivity <span className="tabular">{sensitivity.toFixed(1)}×</span>

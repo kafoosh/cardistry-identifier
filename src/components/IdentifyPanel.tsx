@@ -1,8 +1,6 @@
-import type { HandLabel, IdentifyState } from '../recognition/identifier'
+import type { HandGuess, HandLabel, IdentifyState } from '../recognition/identifier'
 
-const handName = (h: HandLabel) => (h === 'Both' ? 'both hands' : `${h.toLowerCase()} hand`)
-
-interface GuessProps {
+interface StatusProps {
   state: IdentifyState | null
   templateCount: number
   moveCount: number
@@ -11,12 +9,12 @@ interface GuessProps {
   onRecord: () => void
 }
 
-/** The current answer, shown above the camera: one move, or one per hand. */
-export function IdentifyGuess({ state, templateCount, moveCount, sharedCount, sharedError, onRecord }: GuessProps) {
-  if (!state) return <p className="muted small">Loading takes from this device and the library…</p>
+/** One line above the camera: what Identify is doing and what it compares against. */
+export function IdentifyStatus({ state, templateCount, moveCount, sharedCount, sharedError, onRecord }: StatusProps) {
+  if (!state) return <p className="identify-status muted small">Loading takes from this device and the library…</p>
   if (state.status === 'no-templates') {
     return (
-      <div className="guess-empty">
+      <div className="identify-status">
         <span className="small">
           {sharedError
             ? "Nothing to compare against: the library couldn't be reached and there are no takes on this device."
@@ -28,61 +26,72 @@ export function IdentifyGuess({ state, templateCount, moveCount, sharedCount, sh
       </div>
     )
   }
-  const recent = state.showLast ? state.last : null
-  if (!recent) {
-    return (
-      <div className="guess">
-        <span className="muted">{state.status === 'still' ? 'Waiting for a move…' : 'Watching…'}</span>
-        <span className="muted small">
-          {templateCount} take{templateCount === 1 ? '' : 's'} of {moveCount} move{moveCount === 1 ? '' : 's'}
-          {sharedCount ? `, ${sharedCount} from the library` : ''}
-          {sharedError ? ", library unreachable" : ''}
-        </span>
-      </div>
-    )
-  }
-  if (recent.guesses.length === 1) {
-    const g = recent.guesses[0]
-    return (
-      <div className="guess" aria-live="polite">
-        <strong>{g.moveName}</strong>
-        <span className="muted small">{handName(g.hand)}</span>
-      </div>
-    )
-  }
   return (
-    <div className="guess guess-hands" aria-live="polite">
-      {recent.guesses.map((g) => (
-        <div key={g.hand}>
-          <span className="muted small">{g.hand} hand</span>
-          <strong>{g.moveName}</strong>
-        </div>
-      ))}
-    </div>
+    <p className="identify-status small muted">
+      <span className={`live-dot ${state.status === 'matching' ? 'on' : ''}`} />
+      {state.status === 'still' ? 'Waiting for a move' : 'Watching'} · {templateCount} take
+      {templateCount === 1 ? '' : 's'} of {moveCount} move{moveCount === 1 ? '' : 's'}
+      {sharedCount ? ` (${sharedCount} from the library)` : ''}
+      {sharedError ? ', library unreachable' : ''}
+    </p>
   )
 }
 
-/** Top candidates per hand, drawn over the bottom of the camera view. */
-export function IdentifyScores({ state }: { state: IdentifyState | null }) {
-  if (!state?.groups.length) return null
+interface BoxContent {
+  moveName: string | null
+  strength: number
+  withCards: boolean
+  /** Holding the latest confident answer. */
+  confident: boolean
+  runnerUp: string | null
+}
+
+function contentFor(state: IdentifyState | null, hand: HandLabel): BoxContent {
+  const guess: HandGuess | undefined = state?.showLast ? state.last?.guesses.find((g) => g.hand === hand) : undefined
+  const scores = state?.groups.find((g) => g.hand === hand)?.scores ?? []
+  if (guess) {
+    return {
+      moveName: guess.moveName,
+      strength: guess.strength,
+      withCards: guess.withCards,
+      confident: true,
+      runnerUp: scores.find((s) => s.moveName !== guess.moveName && s.strength > 0)?.moveName ?? null,
+    }
+  }
+  const top = scores[0]
+  return {
+    moveName: top && top.strength > 0 ? top.moveName : null,
+    strength: top ? top.strength : 0,
+    withCards: Boolean(top?.withCards),
+    confident: false,
+    runnerUp: top && scores[1] && scores[1].strength > 0 ? scores[1].moveName : null,
+  }
+}
+
+/**
+ * Left hand, both hands, right hand: one box each, laid out the way the
+ * hands appear on screen (swapped when the preview isn't mirrored).
+ */
+export function IdentifyBoxes({ state, mirror }: { state: IdentifyState | null; mirror: boolean }) {
+  const order: HandLabel[] = mirror ? ['Left', 'Both', 'Right'] : ['Right', 'Both', 'Left']
   return (
-    <div className="scores-overlay">
-      {state.groups.map((g) => (
-        <div key={g.hand} className="score-group">
-          {state.groups.length > 1 && <span className="small">{g.hand === 'Both' ? 'Both hands' : `${g.hand} hand`}</span>}
-          <ol className="scores">
-            {g.scores.map((s) => (
-              <li key={s.moveName}>
-                <span className="score-name">{s.moveName}</span>
-                <span className="bar">
-                  <span style={{ width: `${Math.round(s.strength * 100)}%` }} />
-                </span>
-                <span className="small tabular">{s.distance.toFixed(2)}</span>
-              </li>
-            ))}
-          </ol>
-        </div>
-      ))}
+    <div className="hand-boxes">
+      {order.map((hand) => {
+        const c = contentFor(state, hand)
+        return (
+          <div key={hand} className={`hand-box ${hand === 'Both' ? 'both' : ''} ${c.confident ? 'confident' : ''}`}>
+            <span className="hand-box-label">{hand === 'Both' ? 'Both hands' : `${hand} hand`}</span>
+            <strong className="hand-box-move">{c.moveName ?? '—'}</strong>
+            <span className="hand-box-bar">
+              <span style={{ width: `${Math.round(c.strength * 100)}%` }} />
+            </span>
+            <span className="hand-box-meta">
+              {c.moveName ? `${Math.round(c.strength * 100)}%` : ' '}
+              {c.moveName && c.withCards ? ' · fingers + cards' : c.moveName ? ' · fingers' : ''}
+            </span>
+          </div>
+        )
+      })}
     </div>
   )
 }

@@ -17,6 +17,10 @@ export interface HandGuess {
   hand: HandLabel
   moveName: string
   strength: number
+  /** Confidence came from fingers and cards together. */
+  withCards: boolean
+  /** Tracked hand slot, for one-hand guesses (labels can flicker; slots don't). */
+  slot?: 0 | 1
 }
 
 export interface IdentifyState {
@@ -150,6 +154,12 @@ function pickGuesses(result: MatchResult, label: (slot: 0 | 1) => HandLabel): Ha
     .map((s) => ({ slot: s.slot, top: s.scores[0] }))
     .filter((s) => s.top && s.top.strength > 0)
   const bestSingle = Math.max(0, ...singles.map((s) => s.top.strength))
-  if (both && both.strength > 0 && both.strength >= bestSingle * 0.9) return [{ hand: 'Both', moveName: both.moveName, strength: both.strength }]
-  return singles.map((s) => ({ hand: label(s.slot), moveName: s.top.moveName, strength: s.top.strength }))
+  if (both && both.strength > 0 && both.strength >= bestSingle * 0.9) return [{ hand: 'Both', moveName: both.moveName, strength: both.strength, withCards: Boolean(both.withCards) }]
+  return singles.map((s) => ({
+    hand: label(s.slot),
+    slot: s.slot,
+    moveName: s.top.moveName,
+    strength: s.top.strength,
+    withCards: Boolean(s.top.withCards),
+  }))
 }

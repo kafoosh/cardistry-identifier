@@ -59,7 +59,7 @@ export class Recorder {
   /** `preroll` frames (from just before now) are kept at the start of the recording. */
   start(withVideo: boolean, preroll: Frame[] = []) {
     this.t0 = preroll.length ? preroll[0].t : null
-    this.frames = preroll.map((f) => ({ t: f.t - this.t0!, hands: f.hands }))
+    this.frames = preroll.map((f) => ({ ...f, t: f.t - this.t0! }))
     this.videoStartMs = -1
     const lastPreroll = preroll.length ? preroll[preroll.length - 1].t : -Infinity
     this.unsubscribe = this.loop.onFrame((f) => {
@@ -67,7 +67,7 @@ export class Recorder {
       if (this.t0 === null) this.t0 = f.t
       const t = f.t - this.t0
       if (this.videoStartMs < 0) this.videoStartMs = t
-      this.frames.push({ t, hands: f.hands })
+      this.frames.push({ ...f, t })
       if (t >= MAX_RECORDING_MS) this.onAutoStop()
     })
     const mimeType = withVideo ? pickVideoMime() : undefined

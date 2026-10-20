@@ -1,15 +1,27 @@
-import { FEATURE_DIM, type FeatureSequence } from './features'
+import { FEATURE_DIM, HAND_DIM, type FeatureSequence } from './features'
 
-function frameDist(a: Float32Array, i: number, b: Float32Array, j: number): number {
+/**
+ * When only one side has card data, the card part can't be compared; the
+ * hand part is scaled up a little instead, so card-aware comparisons aren't
+ * unfairly penalised next to hands-only ones: a matching card track is
+ * worth more than the card part it adds to the distance.
+ */
+const NO_CARDS_FACTOR = 1.35
+
+function frameDist(a: Float32Array, i: number, b: Float32Array, j: number, withCards: boolean): number {
   let s = 0
   const oa = i * FEATURE_DIM
   const ob = j * FEATURE_DIM
-  for (let d = 0; d < FEATURE_DIM; d++) {
+  const dims = withCards ? FEATURE_DIM : HAND_DIM
+  for (let d = 0; d < dims; d++) {
     const x = a[oa + d] - b[ob + d]
     s += x * x
   }
-  return Math.sqrt(s)
+  return withCards ? Math.sqrt(s) : Math.sqrt(s) * NO_CARDS_FACTOR
 }
+
+/** Whether two sequences can be compared on cards as well as hands. */
+export const bothHaveCards = (a: FeatureSequence, b: FeatureSequence) => a.hasCards && b.hasCards
 
 /**
  * Dynamic Time Warping distance between two whole sequences, with a
@@ -19,6 +31,7 @@ function frameDist(a: Float32Array, i: number, b: Float32Array, j: number): numb
 export function dtw(a: FeatureSequence, b: FeatureSequence, bandRatio = 0.4): number {
   const n = a.frames
   const m = b.frames
+  const withCards = bothHaveCards(a, b)
   const band = Math.max(Math.ceil(Math.max(n, m) * bandRatio), Math.abs(n - m) + 1)
   let prev = new Float64Array(m).fill(Infinity)
   let prevLen = new Float64Array(m)
@@ -30,7 +43,7 @@ export function dtw(a: FeatureSequence, b: FeatureSequence, bandRatio = 0.4): nu
     const lo = Math.max(0, centre - band)
     const hi = Math.min(m - 1, centre + band)
     for (let j = lo; j <= hi; j++) {
-      const d = frameDist(a.data, i, b.data, j)
+      const d = frameDist(a.data, i, b.data, j, withCards)
       if (i === 0 && j === 0) {
         cur[j] = d
         curLen[j] = 1
@@ -75,6 +88,7 @@ export interface SubsequenceMatch {
 export function subsequenceDtw(query: FeatureSequence, template: FeatureSequence): SubsequenceMatch {
   const n = query.frames
   const m = template.frames
+  const withCards = bothHaveCards(query, template)
   let prev = new Float64Array(m)
   let prevLen = new Float64Array(m)
   let prevStart = new Int32Array(m)
@@ -83,7 +97,7 @@ export function subsequenceDtw(query: FeatureSequence, template: FeatureSequence
   let curStart = new Int32Array(m)
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < m; j++) {
-      const d = frameDist(query.data, i, template.data, j)
+      const d = frameDist(query.data, i, template.data, j, withCards)
       if (j === 0) {
         // Free start anywhere in the query.
         cur[0] = d

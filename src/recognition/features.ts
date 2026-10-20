@@ -1,18 +1,28 @@
 import { detectActiveHands } from '../recording/activeHands'
+import type { Packet } from '../cards/types'
 import type { Frame, Handedness, Point3 } from '../tracking/types'
 
 /** Resampling rate for matching. Halves the work of 30 fps input, and DTW absorbs speed differences anyway. */
 export const FEATURE_FPS = 15
 const MAX_GAP_FRAMES = 5
 const SECONDARY_WEIGHT = 0.5
-/** Feature length per frame: 2 hands × 20 points × 3, 2 × (cos, sin) orientation, inter-hand vector (2). */
-export const FEATURE_DIM = 2 * 60 + 4 + 2
+/** Hand part of a frame's features: 2 hands × 20 points × 3, 2 × (cos, sin) orientation, inter-hand vector (2). */
+export const HAND_DIM = 2 * 60 + 4 + 2
+/** Card part: per hand (primary, secondary) 7 values for the packets it holds, plus the total packet count. */
+const CARD_PER_HAND = 7
+export const CARD_DIM = 2 * CARD_PER_HAND + 1
+/** Feature length per frame. The card part is zero for recordings made without card tracking. */
+export const FEATURE_DIM = HAND_DIM + CARD_DIM
+/** Card features count for this much against the hand features. */
+const CARD_WEIGHT = 1
 
 export interface FeatureSequence {
   /** Row-major, length = frames × FEATURE_DIM. */
   data: Float32Array
   frames: number
   durationMs: number
+  /** Whether card tracking was on for (nearly) all of it, so the card part means something. */
+  hasCards: boolean
 }
 
 type MaybeHand = { landmarks: Point3[]; handedness: Handedness } | null
@@ -85,6 +95,53 @@ function normaliseHand(lm: Point3[], mirror: boolean, aspect: number, out: Float
   return mirror ? Math.PI - theta : theta
 }
 
+/**
+ * The packets one hand holds, in that hand's own frame (wrist origin, palm
+ * length scale, rotated so the palm points up, left hands mirrored), so a
+ * move reads the same from any camera angle: how many packets, where the
+ * biggest sits relative to the palm, its angle relative to the palm (on the
+ * doubled circle, since a packet turned 180° looks the same), how thin it
+ * looks (edge-on or face-on), and its size relative to the hand.
+ */
+function cardFeatures(
+  cards: Packet[],
+  slot: 0 | 1,
+  lm: Point3[],
+  mirror: boolean,
+  aspect: number,
+  out: Float32Array,
+  offset: number,
+  weight: number,
+) {
+  const owned = cards.filter((c) => c.hand === slot).sort((a, b) => b.length * b.width - a.length * a.width)
+  out[offset] = (Math.min(owned.length, 3) / 3) * weight
+  const top = owned[0]
+  if (!top) return
+  const ox = lm[0][0] * aspect
+  const oy = lm[0][1]
+  const vx = lm[9][0] * aspect - ox
+  const vy = lm[9][1] - oy
+  const scale = Math.hypot(vx, vy) || 1e-3
+  const phi = -Math.PI / 2 - Math.atan2(vy, vx)
+  const c = Math.cos(phi)
+  const s = Math.sin(phi)
+  const px = top.cx * aspect - ox
+  const py = top.cy - oy
+  let x = (px * c - py * s) / scale
+  const y = (px * s + py * c) / scale
+  let rel = top.angle + phi
+  if (mirror) {
+    x = -x
+    rel = Math.PI - rel
+  }
+  out[offset + 1] = x * 0.3 * weight
+  out[offset + 2] = y * 0.3 * weight
+  out[offset + 3] = Math.cos(2 * rel) * 0.5 * weight
+  out[offset + 4] = Math.sin(2 * rel) * 0.5 * weight
+  out[offset + 5] = (top.length > 0 ? top.width / top.length : 0) * 0.5 * weight
+  out[offset + 6] = Math.min(4, top.length / scale) * 0.3 * weight
+}
+
 const LABEL_RADIUS = 7
 
 /** For each frame, whether most tracked frames within ±7 of it say this hand is a left hand. */
@@ -129,6 +186,7 @@ export function extractFeatures(frames: Frame[], aspect: number, primarySlot?: 0
   const leftNearby = [0, 1].map((slot) => localLeftMajority(filled[slot]))
   const mirrorAt = (slot: number, i: number) => leftNearby[slot][i]
 
+  const cardFrames = frames.filter((f) => f.cards !== undefined).length >= frames.length * 0.8
   const raw = new Float32Array(frames.length * FEATURE_DIM)
   for (let i = 0; i < frames.length; i++) {
     const base = i * FEATURE_DIM
@@ -143,6 +201,12 @@ export function extractFeatures(frames: Frame[], aspect: number, primarySlot?: 0
       const a = normaliseHand(q.landmarks, mirrorAt(secondary, i), aspect, raw, base + 60, SECONDARY_WEIGHT)
       raw[base + 122] = Math.cos(a) * SECONDARY_WEIGHT
       raw[base + 123] = Math.sin(a) * SECONDARY_WEIGHT
+    }
+    if (cardFrames && frames[i].cards) {
+      const cards = frames[i].cards!
+      if (p) cardFeatures(cards, primary, p.landmarks, mirrorAt(primary, i), aspect, raw, base + HAND_DIM, CARD_WEIGHT)
+      if (q) cardFeatures(cards, secondary, q.landmarks, mirrorAt(secondary, i), aspect, raw, base + HAND_DIM + CARD_PER_HAND, CARD_WEIGHT * SECONDARY_WEIGHT)
+      raw[base + HAND_DIM + 2 * CARD_PER_HAND] = (Math.min(cards.length, 4) / 4) * CARD_WEIGHT
     }
     if (p && q) {
       const scale = Math.hypot((p.landmarks[9][0] - p.landmarks[0][0]) * aspect, p.landmarks[9][1] - p.landmarks[0][1]) || 1e-3
@@ -181,7 +245,7 @@ export function extractFeatures(frames: Frame[], aspect: number, primarySlot?: 0
       out[k * FEATURE_DIM + d] = (data[a * FEATURE_DIM + d] + 2 * data[k * FEATURE_DIM + d] + data[b * FEATURE_DIM + d]) / 4
     }
   }
-  return { data: out, frames: n, durationMs }
+  return { data: out, frames: n, durationMs, hasCards: cardFrames }
 }
 
 /** Mean landmark speed of the busiest hand over the frames, in palm lengths per second. */
