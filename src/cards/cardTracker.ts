@@ -17,8 +17,10 @@ const HOLD_FRAMES = 24
 
 /** Where the deck is held for calibration: a card-shaped box in the middle, in normalised frame coordinates. */
 export function calibrationBox(aspect: number) {
-  const h = 0.46
-  const w = (h * 63) / 88 / aspect
+  // Landscape, the comfortable way to hold a deck up to a camera; on a tall
+  // screen the box shrinks so it still fits across.
+  const h = Math.min(0.36, (0.8 * aspect * 63) / 88)
+  const w = (h * 88) / 63 / aspect
   return { x0: 0.5 - w / 2, y0: 0.47 - h / 2, x1: 0.5 + w / 2, y1: 0.47 + h / 2 }
 }
 
