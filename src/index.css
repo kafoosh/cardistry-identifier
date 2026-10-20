@@ -8,7 +8,12 @@
   --warn: #fbbf24;
   --danger: #f87171;
   color-scheme: dark;
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
   line-height: 1.45;
   color: var(--text);
   background: var(--bg);
@@ -946,7 +951,6 @@ button.link {
   cursor: ew-resize;
 }
 
-
 .guess-hands {
   display: flex;
   flex-wrap: wrap;
@@ -965,8 +969,18 @@ button.link {
 /* Camera screen: what you're recording on top, the camera filling the
    middle, and the mode switch and shutter at the bottom, all on one screen. */
 .app.app-camera {
-  height: 100dvh;
+  /* The small viewport height: on phones the browser's bars come and go as the
+     page is touched, and sizing to the large or dynamic height makes the whole
+     screen grow past the window and snap back. */
+  height: 100svh;
   min-height: 0;
+  overflow: hidden;
+}
+
+/* While the camera screen is up the page itself must not scroll or bounce. */
+body:has(.app-camera) {
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 @media (max-width: 520px) {
@@ -1248,7 +1262,6 @@ button.round {
     justify-content: center;
   }
 }
-
 
 /* Identify */
 .identify-status {
