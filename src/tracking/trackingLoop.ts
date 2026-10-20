@@ -1,5 +1,5 @@
 import type { HandLandmarker } from '@mediapipe/tasks-vision'
-import type { CardTracker } from '../cards/cardTracker'
+import type { CardTracking } from '../cards/cardTracking'
 import type { Fan, Packet } from '../cards/types'
 import { drawCards, drawFans, drawHands } from './draw'
 import { HandIdentity } from './handIdentity'
@@ -32,7 +32,7 @@ export class TrackingLoop {
   private ctx: CanvasRenderingContext2D
   private landmarker: HandLandmarker
   /** Card tracking, when switched on. Runs every other frame; frames in between reuse the last packets. */
-  cards: CardTracker | null = null
+  cards: CardTracking | null = null
   showCards = true
   /** Draw the hand skeletons (and packets) over the preview. */
   showWireframe = true

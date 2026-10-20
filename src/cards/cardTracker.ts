@@ -3,7 +3,7 @@ import { CARD_ASPECT, saveDeck, type DeckModel } from './deckModel'
 import type { Fan, Packet } from './types'
 
 /** Working resolution (long side). Keeps a frame to a few ms while a packet still spans dozens of pixels. */
-const WORK_W = 256
+export const WORK_W = 256
 /** A packet further than this (in deck lengths) from every tracked hand isn't one being handled. */
 const MAX_HAND_DIST = 1.0
 /** Frames the last tracked hands count for after the hand tracker loses them (a hand under a deck often drops out). */
@@ -130,8 +130,9 @@ interface Blob {
  * Packets that overlap in view merge into one.
  */
 export class CardTracker {
-  private canvas = document.createElement('canvas')
-  private ctx = this.canvas.getContext('2d', { willReadFrequently: true })!
+  /** Made on first use, so the tracker also runs where there is no document (a worker, tests). */
+  private canvas: HTMLCanvasElement | null = null
+  private ctx: CanvasRenderingContext2D | null = null
   private w = 0
   private h = 0
   private gx = new Float32Array(0)
@@ -191,6 +192,11 @@ export class CardTracker {
     return this.calibrating
   }
 
+  /** The learned deck, for saving outside the tracker (a worker has no storage). */
+  get deckModel() {
+    return this.deck
+  }
+
   startCalibration() {
     this.calibrating = true
     this.stable = 0
@@ -213,6 +219,11 @@ export class CardTracker {
     if (!vw || !vh) return null
     const w = WORK_W
     const h = Math.max(1, Math.round((WORK_W * vh) / vw))
+    if (!this.canvas || !this.ctx) {
+      this.canvas = document.createElement('canvas')
+      this.ctx = this.canvas.getContext('2d', { willReadFrequently: true })
+      if (!this.ctx) return null
+    }
     if (w !== this.w || h !== this.h) {
       this.w = this.canvas.width = w
       this.h = this.canvas.height = h

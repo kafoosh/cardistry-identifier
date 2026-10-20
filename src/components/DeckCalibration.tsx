@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { calibrationBox, type CalibrationState, type CardTracker } from '../cards/cardTracker'
+import { calibrationBox, type CalibrationState } from '../cards/cardTracker'
+import type { CardTracking } from '../cards/cardTracking'
 
 interface Props {
-  tracker: CardTracker
+  tracker: CardTracking
   /** Whether a deck from an earlier session can be reused. */
   hasSavedDeck: boolean
   onDone: () => void

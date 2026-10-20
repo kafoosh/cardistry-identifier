@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react'
 import { Library } from './components/Library'
-import { CardTracker } from './cards/cardTracker'
+import { createCardTracking } from './cards/cardTrackerClient'
 import { loadDeck } from './cards/deckModel'
 import { DeckCalibration } from './components/DeckCalibration'
 import { CameraSettings } from './components/CameraSettings'
@@ -122,7 +122,7 @@ export default function App() {
   const [wireframe, setWireframe] = useState(() => readPref('cardistry.wireframe', true))
   // One tracker for the app's life; it keeps the learned deck between camera sessions.
   const [cardTracker] = useState(() => {
-    const t = new CardTracker(loadDeck())
+    const t = createCardTracking(loadDeck())
     t.borderless = readPref('cardistry.borderless', false)
     return t
   })
@@ -243,7 +243,13 @@ export default function App() {
     if (phase !== 'live') return
     const id = setInterval(() => {
       const m = watcherRef.current?.latest
-      if (m) setMotion({ energy: m.energy, active: m.active, on: m.on })
+      if (!m) return
+      // Only re-render when the bar would visibly change.
+      setMotion((prev) =>
+        Math.abs(prev.energy - m.energy) < 0.01 && prev.active === m.active && prev.on === m.on
+          ? prev
+          : { energy: m.energy, active: m.active, on: m.on },
+      )
     }, 150)
     return () => clearInterval(id)
   }, [phase])
