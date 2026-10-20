@@ -54,7 +54,12 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
   const frames = useMemo(() => keepHands(trimmed, kept), [trimmed, kept])
   const trimBase = capture.frames.find((f) => f.t >= trim.startMs)?.t ?? 0
   const durationMs = frames.length ? frames[frames.length - 1].t : 0
-  const repeats = useMemo(() => findRepeats(frames, width / height || 4 / 3), [frames, width, height])
+  // undefined = the automatic choice; otherwise an index into repeats.options picked with Shorter/Longer.
+  const [periodChoice, setPeriodChoice] = useState<number | undefined>(undefined)
+  const repeats = useMemo(
+    () => findRepeats(frames, width / height || 4 / 3, periodChoice),
+    [frames, width, height, periodChoice],
+  )
   const [splitRepeats, setSplitRepeats] = useState(true)
   const repeatTakes = (): Take[] | undefined => {
     if (!repeats || !splitRepeats) return undefined
@@ -133,10 +138,31 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
           {capture.video ? ' · video clip captured' : ''}
         </p>
         {repeats && (
-          <label className="check">
-            <input type="checkbox" checked={splitRepeats} onChange={(e) => setSplitRepeats(e.target.checked)} />
-            Found {repeats.segments.length} repeats of about {(repeats.periodMs / 1000).toFixed(1)}s. Save each as its own take
-          </label>
+          <div className="repeats">
+            <label className="check">
+              <input type="checkbox" checked={splitRepeats} onChange={(e) => setSplitRepeats(e.target.checked)} />
+              Found {repeats.segments.length} repeats of about {(repeats.periodMs / 1000).toFixed(1)}s. Save each as its own take
+            </label>
+            {splitRepeats && repeats.options.length > 1 && (
+              <div className="repeat-length">
+                <span className="small muted">Wrong length?</span>
+                <button
+                  className="link"
+                  disabled={repeats.choice === 0}
+                  onClick={() => setPeriodChoice(repeats.choice - 1)}
+                >
+                  Shorter
+                </button>
+                <button
+                  className="link"
+                  disabled={repeats.choice === repeats.options.length - 1}
+                  onClick={() => setPeriodChoice(repeats.choice + 1)}
+                >
+                  Longer
+                </button>
+              </div>
+            )}
+          </div>
         )}
         {tooShort && <p className="hint">This take is very short. Widen the trim, or try again and hold the move for longer.</p>}
 

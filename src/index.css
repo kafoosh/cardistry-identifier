@@ -1258,3 +1258,14 @@ button.round {
     justify-content: center;
   }
 }
+
+.repeat-length {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 2px 0 6px 28px;
+}
+
+.repeat-length button:disabled {
+  opacity: 0.4;
+}

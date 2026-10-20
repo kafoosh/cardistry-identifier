@@ -2,10 +2,12 @@ import { extractFeatures, FEATURE_DIM, type FeatureSequence } from './features'
 import type { Frame } from '../tracking/types'
 
 /** Shortest and longest single repetition considered. */
-const MIN_PERIOD_MS = 500
+const MIN_PERIOD_MS = 700
 const MAX_PERIOD_MS = 5000
 /** How much closer a frame must be to itself one period later than to a random other frame. */
-const MAX_PERIOD_RATIO = 0.6
+const MAX_PERIOD_RATIO = 0.55
+/** How much worse a shorter dip may be and still count as the real repetition when the deeper one is two or three of them. */
+const HARMONIC_SLACK = 1.5
 
 export interface RepeatResult {
   /** Each repetition, in ms on the input frames' clock. */
@@ -13,6 +15,10 @@ export interface RepeatResult {
   periodMs: number
   /** 0 to 1: how alike the repetitions are. */
   strength: number
+  /** Other plausible repetition lengths (ms, shortest first), for "longer" and "shorter" in the review. */
+  options: number[]
+  /** Which of `options` this result uses. */
+  choice: number
 }
 
 function dist(f: FeatureSequence, i: number, j: number): number {
@@ -34,7 +40,7 @@ function dist(f: FeatureSequence, i: number, j: number): number {
  * Partial repetitions at either end are dropped. Returns null when the take
  * doesn't repeat clearly at least twice.
  */
-export function findRepeats(frames: Frame[], aspect: number): RepeatResult | null {
+export function findRepeats(frames: Frame[], aspect: number, preferred?: number): RepeatResult | null {
   const f = extractFeatures(frames, aspect)
   if (!f || f.frames < 10) return null
   const n = f.frames
@@ -63,14 +69,49 @@ export function findRepeats(frames: Frame[], aspect: number): RepeatResult | nul
     for (let i = 0; i + lag < n; i++) s += dist(f, i, i + lag)
     ratios.push(s / (n - lag) / base)
   }
-  // The best lag, but prefer the shortest one nearly as good, so two
-  // repetitions aren't mistaken for one.
-  const best = Math.min(...ratios)
-  if (best > MAX_PERIOD_RATIO) return null
-  let pick = ratios.findIndex((r, k) => r <= best * 1.15 && (k === 0 || r <= ratios[k - 1]) && (k === ratios.length - 1 || r <= ratios[k + 1]))
-  if (pick < 0) pick = ratios.indexOf(best)
-  const period = minLag + pick
+  // Candidate repetition lengths: each dip where the motion lines up with a
+  // shifted copy of itself. The deepest dip is the starting point. Two or
+  // three repetitions together also line up (often slightly better, as fewer
+  // frames overlap), so a dip at a half or a third of the deepest one wins
+  // when it's nearly as deep. A part of a move that resembles another part
+  // (half a cut) lines up clearly worse, so it doesn't.
+  const candidates: { lag: number; ratio: number }[] = []
+  ratios.forEach((r, k) => {
+    if (r <= MAX_PERIOD_RATIO && (k === 0 || r <= ratios[k - 1]) && (k === ratios.length - 1 || r <= ratios[k + 1]))
+      candidates.push({ lag: minLag + k, ratio: r })
+  })
+  if (!candidates.length) return null
+  const segmentsFor = (period: number) => cutsFor(f, base, period)
+  const usable = candidates.map((c) => ({ ...c, cuts: segmentsFor(c.lag) })).filter((c) => c.cuts.length >= 3)
+  if (!usable.length) return null
+  let choice = usable.reduce((bi, c, i) => (c.ratio < usable[bi].ratio ? i : bi), 0)
+  const deepest = usable[choice]
+  for (let i = 0; i < choice; i++) {
+    const c = usable[i]
+    const k = Math.round(deepest.lag / c.lag)
+    const harmonic = k >= 2 && Math.abs(deepest.lag / c.lag - k) <= 0.12 * k
+    if (harmonic && c.ratio <= deepest.ratio * HARMONIC_SLACK + 0.03) {
+      choice = i
+      break
+    }
+  }
+  if (preferred !== undefined) choice = Math.max(0, Math.min(usable.length - 1, preferred))
+  const picked = usable[choice]
+  const cuts = picked.cuts
+  const segments = []
+  for (let k = 0; k + 1 < cuts.length; k++) segments.push({ startMs: t0 + cuts[k] * dt, endMs: t0 + cuts[k + 1] * dt })
+  return {
+    segments,
+    periodMs: picked.lag * dt,
+    strength: Math.max(0, Math.min(1, 1 - picked.ratio)),
+    options: usable.map((c) => c.lag * dt),
+    choice,
+  }
+}
 
+/** Cut points (feature frame indices) for a given repetition length; fewer than 3 means under two whole repetitions. */
+function cutsFor(f: FeatureSequence, base: number, period: number): number[] {
+  const n = f.frames
   // Try every starting pose in the first repetition and keep the one whose
   // chain of cuts is longest and most alike; ties go to stiller poses, since
   // cuts between repetitions are cleaner where the hands pause.
@@ -103,12 +144,5 @@ export function findRepeats(frames: Frame[], aspect: number): RepeatResult | nul
     const c = chain(a)
     if (c.cuts.length > best_.cuts.length || (c.cuts.length === best_.cuts.length && c.score < best_.score)) best_ = c
   }
-  const cuts = best_.cuts
-  if (cuts.length < 3) return null // fewer than two whole repetitions
-
-  const segments = []
-  for (let k = 0; k + 1 < cuts.length; k++) {
-    segments.push({ startMs: t0 + cuts[k] * dt, endMs: t0 + cuts[k + 1] * dt })
-  }
-  return { segments, periodMs: period * dt, strength: Math.max(0, Math.min(1, 1 - best)) }
+  return best_.cuts
 }
