@@ -99,7 +99,11 @@ export class TrackingLoop {
       const cards = this.cards
       if (cards?.isCalibrating) cards.process(v, frame.hands)
       else if (cards?.ready) {
-        if (this.cardTick++ % 2 === 0 || !frame.hands.length) {
+        // Cards run on every other frame, and less often when they are slow on
+        // this phone, so hand tracking keeps its frame rate; the boxes are
+        // smoothed between runs anyway.
+        const stride = Math.min(4, Math.max(2, Math.ceil(cards.ms / 12)))
+        if (this.cardTick++ % stride === 0 || !frame.hands.length) {
           this.lastPackets = cards.process(v, frame.hands)
           this.lastFans = cards.fans
         }

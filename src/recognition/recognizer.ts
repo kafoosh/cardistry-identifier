@@ -26,27 +26,39 @@ export interface MoveScore {
 /** Used until there are enough recordings to estimate a threshold from data. */
 export const DEFAULT_THRESHOLD = 1.6
 
-/** Best distance per move, sorted best first. */
+/**
+ * Best distance per move, sorted best first. With `support`, a move with
+ * several takes is scored on its two closest takes rather than its single
+ * closest: one odd take that happens to resemble the window is not evidence
+ * that the move was done, two agreeing takes are.
+ */
 function rankMoves(
   entries: { t: Template; distance: number; startedAgoMs?: number; withCards?: boolean }[],
   threshold: number,
+  support = false,
 ): MoveScore[] {
-  const best = new Map<string, MoveScore>()
-  for (const { t, distance, startedAgoMs, withCards } of entries) {
-    if (!Number.isFinite(distance)) continue
-    const prev = best.get(t.moveName)
-    if (!prev || distance < prev.distance) {
-      best.set(t.moveName, {
-        moveName: t.moveName,
-        distance,
-        strength: Math.max(0, Math.min(1, 1 - distance / threshold)),
-        templateId: t.id,
-        startedAgoMs,
-        withCards,
-      })
-    }
+  const byMove = new Map<string, typeof entries>()
+  for (const e of entries) {
+    if (!Number.isFinite(e.distance)) continue
+    const list = byMove.get(e.t.moveName) ?? []
+    list.push(e)
+    byMove.set(e.t.moveName, list)
   }
-  return [...best.values()].sort((a, b) => a.distance - b.distance)
+  const scores: MoveScore[] = []
+  for (const [moveName, list] of byMove) {
+    list.sort((a, b) => a.distance - b.distance)
+    const [first, second] = list
+    const distance = support && second ? (first.distance + second.distance) / 2 : first.distance
+    scores.push({
+      moveName,
+      distance,
+      strength: Math.max(0, Math.min(1, 1 - distance / threshold)),
+      templateId: first.t.id,
+      startedAgoMs: first.startedAgoMs,
+      withCards: first.withCards,
+    })
+  }
+  return scores.sort((a, b) => a.distance - b.distance)
 }
 
 /** Distance between two whole sequences, done with either hand. */
@@ -93,6 +105,7 @@ export function matchLive(windows: FeatureSequence[], templates: Template[], thr
       return best
     }),
     threshold,
+    true,
   )
 }
 

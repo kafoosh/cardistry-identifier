@@ -14,7 +14,7 @@ const CONFIRM_TICKS = 2
 /** Strength below this is a weak fit that isn't worth announcing. */
 const MIN_STRENGTH = 0.3
 /** The best move must beat the runner-up by this much strength, or the window is ambiguous and nothing is announced. */
-const MIN_MARGIN = 0.08
+const MIN_MARGIN = 0.12
 
 /** Who a guess is about: one hand (by its tracked label), or both hands together. */
 export type HandLabel = 'Left' | 'Right' | 'Both'
@@ -160,7 +160,7 @@ export class Identifier {
       else if (this.pending?.key === key) this.pending.ticks++
       else this.pending = { key, ticks: 1 }
       // The last look after the hands stop is the only one a short move gets, so a strong fit counts on its own there.
-      const strong = guesses.length > 0 && Math.max(...guesses.map((g) => g.strength)) >= 0.5
+      const strong = guesses.length > 0 && Math.max(...guesses.map((g) => g.strength)) >= 0.6
       const confirmed = this.pending !== null && (this.pending.ticks >= CONFIRM_TICKS || (settling && strong))
       const last = confirmed ? { guesses, at: Date.now() } : this.state.last
       this.emit({ status: 'matching', groups, last, showLast: false, matchMs: ms })
