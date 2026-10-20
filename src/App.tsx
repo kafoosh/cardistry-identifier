@@ -25,7 +25,7 @@ import {
   type Capture,
 } from './recording/recorder'
 import { requestPersistentStorage, saveRecording } from './storage/db'
-import { describeCameraError, hasMultipleCameras, openCamera, stopStream } from './tracking/camera'
+import { describeCameraError, openCamera, stopStream } from './tracking/camera'
 import { SLOT_COLOURS } from './tracking/draw'
 import { loadHandTracker, type LoadedTracker } from './tracking/handTracker'
 import type { TrackingStats } from './tracking/stats'
@@ -151,7 +151,6 @@ export default function App() {
   const [facing, setFacing] = useState<CameraFacing>('user')
   const [mirror, setMirror] = useState(true)
   const [showGuide, setShowGuide] = useState(true)
-  const [canSwitch, setCanSwitch] = useState(false)
   const [delegate, setDelegate] = useState('')
   const [stats, setStats] = useState<TrackingStats>(EMPTY_STATS)
   const [labels, setLabels] = useState<[Handedness | null, Handedness | null]>([null, null])
@@ -210,7 +209,6 @@ export default function App() {
           setDeckStep('calibrating')
         }
         setPhase('live')
-        setCanSwitch(await hasMultipleCameras())
       } catch (err) {
         stop()
         setError(describeCameraError(err))
@@ -683,11 +681,27 @@ export default function App() {
               <button
                 className="round"
                 onClick={() => start(facing === 'user' ? 'environment' : 'user')}
-                disabled={!canSwitch || recState !== 'ready'}
-                aria-label="Switch camera"
-                title="Switch camera"
+                disabled={recState !== 'ready'}
+                aria-label={facing === 'user' ? 'Flip to the back camera' : 'Flip to the front camera'}
+                title={facing === 'user' ? 'Flip to the back camera' : 'Flip to the front camera'}
               >
-                ⟲
+                <svg
+                  viewBox="0 0 24 24"
+                  width="22"
+                  height="22"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M4 8h3l2-2h6l2 2h3v10H4z" />
+                  <path d="M9.5 13a2.5 2.5 0 0 0 4.3 1.7" />
+                  <path d="M14.5 13a2.5 2.5 0 0 0-4.3-1.7" />
+                  <path d="M14 15.5v-1.8h-1.8" />
+                  <path d="M10 10.5v1.8h1.8" />
+                </svg>
               </button>
               {mode === 'record' ? (
                 <button

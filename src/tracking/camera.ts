@@ -36,16 +36,6 @@ export function stopStream(stream: MediaStream | null) {
   stream?.getTracks().forEach((t) => t.stop())
 }
 
-/** Whether the device has more than one camera, so the switch button is worth showing. */
-export async function hasMultipleCameras(): Promise<boolean> {
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices()
-    return devices.filter((d) => d.kind === 'videoinput').length > 1
-  } catch {
-    return false
-  }
-}
-
 export function describeCameraError(err: unknown): string {
   if (err instanceof DOMException) {
     switch (err.name) {
