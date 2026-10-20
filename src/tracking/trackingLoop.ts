@@ -93,8 +93,10 @@ export class TrackingLoop {
       const inferenceMs = performance.now() - t0
       const t = now - this.startTime
       const frame: Frame = { t, hands: this.identity.assign(result, t) }
-      if (this.cards) {
-        if (this.cardTick++ % 2 === 0 || !frame.hands.length) this.lastPackets = this.cards.process(v, frame.hands)
+      const cards = this.cards
+      if (cards?.isCalibrating) cards.process(v, frame.hands)
+      else if (cards?.ready) {
+        if (this.cardTick++ % 2 === 0 || !frame.hands.length) this.lastPackets = cards.process(v, frame.hands)
         frame.cards = this.lastPackets
       }
       drawHands(this.ctx, frame.hands)

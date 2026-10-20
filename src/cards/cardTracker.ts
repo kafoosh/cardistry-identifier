@@ -1,80 +1,302 @@
-import { HAND_CONNECTIONS } from '../tracking/handTracker'
 import type { TrackedHand } from '../tracking/types'
+import { BIN_COUNT, buildBins, colourBin, saveDeck, type DeckModel } from './deckModel'
 import type { Packet } from './types'
 
 /** Working resolution (long side). Cards are big relative to this, and it keeps a frame to a few ms. */
 const WORK_W = 192
-/** Colour difference (sum of |ΔR|+|ΔG|+|ΔB|) that counts as "not the background". */
-const FOREGROUND_DIFF = 48
-/** How far (in hand sizes) around the hands to look for cards. */
-const ROI_MARGIN = 1.2
-/** Pixels this close to a finger or palm bone (in hand sizes) are hand, not card. */
-const BONE_RADIUS = 0.14
-/** Packet area limits, in hand sizes squared (hand size = wrist to middle knuckle). */
-const MIN_AREA = 0.12
-const MAX_AREA = 8
+/** How far (in hand sizes) around the hands to look for packets. */
+const ROI_MARGIN = 1.0
+/** A packet further than this (in hand sizes) from both hands isn't one being handled. */
+const MAX_HAND_DIST = 1.6
+/** Packet area limits as a share of the whole deck's face. */
+const MIN_DECK_SHARE = 0.06
+const MAX_DECK_SHARE = 1.8
 const MAX_PACKETS = 4
+/** Frames the deck must be held still in the guide before it's learned. */
+const HOLD_FRAMES = 24
+
+/** Where the deck is held for calibration: a card-shaped box in the middle, in normalised frame coordinates. */
+export function calibrationBox(aspect: number) {
+  const h = 0.46
+  const w = (h * 63) / 88 / aspect
+  return { x0: 0.5 - w / 2, y0: 0.47 - h / 2, x1: 0.5 + w / 2, y1: 0.47 + h / 2 }
+}
+
+export interface CalibrationState {
+  phase: 'waiting' | 'holding' | 'done'
+  /** 0..1 while holding. */
+  progress: number
+  hint: string
+  /** Which hand held the deck, by MediaPipe's label. */
+  hand?: 'Left' | 'Right'
+  /** Set when the background has a lot of the deck's colours. */
+  warning?: string
+}
 
 interface HandGeo {
   slot: 0 | 1
+  label: 'Left' | 'Right'
   pts: [number, number][]
   size: number
 }
 
 /**
- * Classical, no-training card tracking, run on a small copy of each frame:
- * learn the background wherever the hands aren't, learn skin colour from the
- * pixels under the hand landmarks, and in the region around the hands call
- * anything that is neither background, skin nor finger a card. Each blob of
- * card pixels becomes a packet: centre, long-axis angle and size from its
- * image moments, held by the nearest hand. Works for patterned backs, since
- * it never needs the deck's colour. Packets touching each other merge; the
- * hand that holds them and their size still tell the matcher a lot.
+ * Card tracking that starts from the deck. A short calibration learns the
+ * deck's colours (and size relative to the hand) while it is held in a
+ * guide box; after that, each frame looks only near the hands for pixels
+ * with the deck's colours. Each blob is a packet: centre, long-axis angle
+ * and size from its image moments, held by the nearest hand. Every packet
+ * comes from that deck, so blobs much smaller or bigger than it, or far
+ * from both hands, are ignored. Touching packets merge into one blob.
  */
 export class CardTracker {
   private canvas = document.createElement('canvas')
   private ctx = this.canvas.getContext('2d', { willReadFrequently: true })!
   private w = 0
   private h = 0
-  private bg: Float32Array | null = null
-  private known: Uint8Array | null = null
-  private skin = { cb: 0, cr: 0, vcb: 120, vcr: 120, ready: false }
   private tracks: Packet[] = []
   private nextId = 1
+  private deck: DeckModel | null = null
+  private calibrating = false
+  private prevBox: Uint8ClampedArray | null = null
+  private stable = 0
+  /** The hand last seen holding the deck, and for how many frames it has been missing since. */
+  private lastHolder: HandGeo | null = null
+  private holderMissing = 0
+  /** Why the last lock attempt was refused, shown for a while after. */
+  private notice = ''
+  private noticeFrames = 0
+  calibration: CalibrationState = { phase: 'waiting', progress: 0, hint: '' }
   /** Last processing time, ms. */
   ms = 0
 
-  reset() {
-    this.bg = null
-    this.known = null
-    this.tracks = []
-    this.skin.ready = false
+  constructor(deck: DeckModel | null = null) {
+    this.deck = deck
   }
 
-  process(video: HTMLVideoElement, hands: TrackedHand[]): Packet[] {
-    const t0 = performance.now()
+  /** Whether a deck has been learned, so packets can be tracked. */
+  get ready() {
+    return this.deck !== null && !this.calibrating
+  }
+
+  startCalibration() {
+    this.calibrating = true
+    this.stable = 0
+    this.prevBox = null
+    this.lastHolder = null
+    this.noticeFrames = 0
+    this.tracks = []
+    this.calibration = { phase: 'waiting', progress: 0, hint: 'Hold your deck in the box, back to the camera' }
+  }
+
+  /** A deck learned now or in an earlier session. */
+  get hasDeck() {
+    return this.deck !== null
+  }
+
+  get isCalibrating() {
+    return this.calibrating
+  }
+
+  stopCalibration() {
+    this.calibrating = false
+  }
+
+  private grab(video: HTMLVideoElement): Uint8ClampedArray | null {
     const vw = video.videoWidth
     const vh = video.videoHeight
-    if (!vw || !vh) return []
+    if (!vw || !vh) return null
     const w = WORK_W
     const h = Math.max(1, Math.round((WORK_W * vh) / vw))
     if (w !== this.w || h !== this.h) {
       this.w = this.canvas.width = w
       this.h = this.canvas.height = h
-      this.bg = new Float32Array(w * h * 3)
-      this.known = new Uint8Array(w * h)
     }
     this.ctx.drawImage(video, 0, 0, w, h)
-    const px = this.ctx.getImageData(0, 0, w, h).data
-    const bg = this.bg!
-    const known = this.known!
+    return this.ctx.getImageData(0, 0, w, h).data
+  }
 
-    const geo: HandGeo[] = hands.map((hd) => {
-      const pts = hd.landmarks.map((p) => [p[0] * w, p[1] * h] as [number, number])
-      return { slot: hd.slot, pts, size: Math.max(4, Math.hypot(pts[9][0] - pts[0][0], pts[9][1] - pts[0][1])) }
+  private geometry(hands: TrackedHand[]): HandGeo[] {
+    return hands.map((hd) => {
+      const pts = hd.landmarks.map((p) => [p[0] * this.w, p[1] * this.h] as [number, number])
+      return {
+        slot: hd.slot,
+        label: hd.handedness,
+        pts,
+        size: Math.max(4, Math.hypot(pts[9][0] - pts[0][0], pts[9][1] - pts[0][1])),
+      }
     })
+  }
 
-    // Region around the hands (where cards can be), in work pixels.
+  process(video: HTMLVideoElement, hands: TrackedHand[]): Packet[] {
+    const t0 = performance.now()
+    const px = this.grab(video)
+    if (!px) return []
+    const geo = this.geometry(hands)
+    const out = this.calibrating ? (this.calibrateStep(px, geo), []) : this.detect(px, geo)
+    this.ms = performance.now() - t0
+    return out
+  }
+
+  private refuse(why: string, holder: HandGeo) {
+    this.stable = 0
+    this.notice = why
+    this.noticeFrames = 45
+    this.calibration = { phase: 'holding', progress: 0, hint: why, hand: holder.label }
+  }
+
+  /** One calibration frame: wait for a hand holding something still in the box, then learn its colours. */
+  private calibrateStep(px: Uint8ClampedArray, geo: HandGeo[]) {
+    const { w, h } = this
+    const box = calibrationBox(w / h)
+    const bx0 = Math.round(box.x0 * w)
+    const by0 = Math.round(box.y0 * h)
+    const bx1 = Math.round(box.x1 * w)
+    const by1 = Math.round(box.y1 * h)
+    const bw = bx1 - bx0
+    const bh = by1 - by0
+    // The middle of the box: deck, not the hand around its edges.
+    const ix0 = bx0 + Math.round(bw * 0.2)
+    const iy0 = by0 + Math.round(bh * 0.2)
+    const ix1 = bx1 - Math.round(bw * 0.2)
+    const iy1 = by1 - Math.round(bh * 0.2)
+
+    // The holding hand: the one nearest the box, with some of it in or around the box.
+    const near = geo.filter((g) =>
+      g.pts.some(([x, y]) => x > bx0 - bw * 0.3 && x < bx1 + bw * 0.3 && y > by0 - bh * 0.3 && y < by1 + bh * 0.3),
+    )
+    const bcx = (bx0 + bx1) / 2
+    const bcy = (by0 + by1) / 2
+    const gap = (g: HandGeo) => Math.min(...g.pts.map(([x, y]) => Math.hypot(x - bcx, y - bcy)))
+    const seen = near.sort((a, b) => gap(a) - gap(b))[0]
+    // A deck covering the fingers makes the hand tracker drop the hand now and then; ride over short gaps.
+    if (seen) {
+      this.lastHolder = seen
+      this.holderMissing = 0
+    } else this.holderMissing++
+    const holder = seen ?? (this.holderMissing <= 10 ? this.lastHolder : null)
+    if (!holder) {
+      this.lastHolder = null
+      this.stable = 0
+      this.prevBox = null
+      this.calibration = { phase: 'waiting', progress: 0, hint: 'Hold your deck in the box, back to the camera' }
+      return
+    }
+
+    // Held still? Compare the middle of the box with the last frame.
+    const inner: number[] = []
+    for (let y = iy0; y < iy1; y++)
+      for (let x = ix0; x < ix1; x++) inner.push(px[(y * w + x) * 4], px[(y * w + x) * 4 + 1], px[(y * w + x) * 4 + 2])
+    const cur = Uint8ClampedArray.from(inner)
+    let diff = 0
+    if (this.prevBox && this.prevBox.length === cur.length) {
+      for (let i = 0; i < cur.length; i++) diff += Math.abs(cur[i] - this.prevBox[i])
+      diff /= cur.length
+    } else diff = Infinity
+    this.prevBox = cur
+    this.stable = diff < 10 ? this.stable + 1 : diff === Infinity ? 0 : Math.max(0, this.stable - 6)
+    this.calibration = {
+      phase: 'holding',
+      progress: Math.min(1, this.stable / HOLD_FRAMES),
+      hint: this.noticeFrames-- > 0 ? this.notice : this.stable ? 'Hold still…' : 'Hold the deck steady in the box',
+      hand: holder.label,
+    }
+    if (this.stable < HOLD_FRAMES) return
+
+    // Learn: deck colours from the middle of the box, skin from fingertips and knuckles outside it.
+    const deckHist = new Float32Array(BIN_COUNT)
+    let deckTotal = 0
+    for (let i = 0; i < cur.length; i += 3) {
+      deckHist[colourBin(cur[i], cur[i + 1], cur[i + 2])]++
+      deckTotal++
+    }
+    const skinHist = new Float32Array(BIN_COUNT)
+    let skinTotal = 0
+    for (const g of geo) {
+      for (const [x, y] of g.pts) {
+        if (x > bx0 && x < bx1 && y > by0 && y < by1) continue
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = Math.round(x) + dx
+            const yy = Math.round(y) + dy
+            if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue
+            const i = (yy * w + xx) * 4
+            skinHist[colourBin(px[i], px[i + 1], px[i + 2])]++
+            skinTotal++
+          }
+        }
+      }
+    }
+    // A face or a bare hand in the box is not a deck.
+    let skinLike = 0
+    if (skinTotal) {
+      for (let b = 0; b < BIN_COUNT; b++) if (skinHist[b] / skinTotal >= 0.06) skinLike += deckHist[b]
+    }
+    if (skinLike / deckTotal > 0.35) {
+      return this.refuse('I see skin in the box. Cover it with the back of your deck', holder)
+    }
+    const bins = buildBins(deckHist, deckTotal, skinHist, skinTotal)
+
+    // How big is the deck? The deck-coloured blob around the box.
+    const ex0 = Math.max(0, bx0 - Math.round(bw * 0.3))
+    const ey0 = Math.max(0, by0 - Math.round(bh * 0.3))
+    const ex1 = Math.min(w - 1, bx1 + Math.round(bw * 0.3))
+    const ey1 = Math.min(h - 1, by1 + Math.round(bh * 0.3))
+    const rw = ex1 - ex0 + 1
+    const rh = ey1 - ey0 + 1
+    const mask = new Uint8Array(rw * rh)
+    for (let y = ey0; y <= ey1; y++) {
+      for (let x = ex0; x <= ex1; x++) {
+        const i = (y * w + x) * 4
+        if (bins[colourBin(px[i], px[i + 1], px[i + 2])]) mask[(y - ey0) * rw + (x - ex0)] = 1
+      }
+    }
+    const blobs = components(majority(mask, rw, rh), rw, rh).sort((a, b) => b.n - a.n)
+    const blob = blobs[0]
+    const area = blob ? blob.n : bw * bh
+    const length = blob ? Math.sqrt(12 * eigen(blob).l1) : bh
+
+    // Warn if the background shares the deck's colours: sample away from the box and hands.
+    let bgHits = 0
+    let bgTotal = 0
+    for (let y = 2; y < h; y += 6) {
+      for (let x = 2; x < w; x += 6) {
+        if (x > ex0 && x < ex1 && y > ey0 && y < ey1) continue
+        if (geo.some((g) => g.pts.some(([lx, ly]) => Math.hypot(lx - x, ly - y) < g.size))) continue
+        const i = (y * w + x) * 4
+        bgTotal++
+        if (bins[colourBin(px[i], px[i + 1], px[i + 2])]) bgHits++
+      }
+    }
+    const bgShare = bgTotal ? bgHits / bgTotal : 0
+    if (bgShare > 0.4) {
+      // The box probably holds background, not a deck.
+      return this.refuse("I can't tell the deck from the background. Hold it closer so it fills the box", holder)
+    }
+
+    this.deck = { bins, areaHands: area / (holder.size * holder.size), lengthAtCalibration: length / h }
+    saveDeck(this.deck)
+    this.calibrating = false
+    this.calibration = {
+      phase: 'done',
+      progress: 1,
+      hint: 'Deck locked',
+      hand: holder.label,
+      warning:
+        bgShare > 0.15
+          ? 'Some of the background is the same colour as your deck, so it may be mistaken for cards. A plainer background helps.'
+          : undefined,
+    }
+  }
+
+  /** Packets: deck-coloured blobs near the hands. */
+  private detect(px: Uint8ClampedArray, geo: HandGeo[]): Packet[] {
+    const deck = this.deck
+    if (!deck || !geo.length) {
+      this.tracks = []
+      return []
+    }
+    const { w, h } = this
     let x0 = w
     let y0 = h
     let x1 = 0
@@ -92,95 +314,25 @@ export class CardTracker {
     y0 = Math.max(0, Math.floor(y0))
     x1 = Math.min(w - 1, Math.ceil(x1))
     y1 = Math.min(h - 1, Math.ceil(y1))
-    const hasRoi = geo.length > 0 && x1 > x0 && y1 > y0
-
-    // Background: learn everywhere outside the region (fast at first, then slowly).
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        if (hasRoi && x >= x0 && x <= x1 && y >= y0 && y <= y1) continue
-        const i = y * w + x
-        const k = i * 3
-        const rate = known[i] ? 0.05 : 1
-        bg[k] += (px[i * 4] - bg[k]) * rate
-        bg[k + 1] += (px[i * 4 + 1] - bg[k + 1]) * rate
-        bg[k + 2] += (px[i * 4 + 2] - bg[k + 2]) * rate
-        known[i] = 1
-      }
-    }
-    if (!hasRoi) {
-      this.tracks = []
-      this.ms = performance.now() - t0
-      return []
-    }
-
-    this.learnSkin(px, geo)
-
-    // Hand pixels: thick lines along every bone.
+    if (x1 <= x0 || y1 <= y0) return []
     const rw = x1 - x0 + 1
     const rh = y1 - y0 + 1
-    const handMask = new Uint8Array(rw * rh)
-    for (const g of geo) {
-      const r = g.size * BONE_RADIUS
-      for (const { start, end } of HAND_CONNECTIONS) paintSegment(handMask, rw, rh, x0, y0, g.pts[start], g.pts[end], r)
-      // Palm: fill between the knuckles and the wrist.
-      paintSegment(handMask, rw, rh, x0, y0, g.pts[0], g.pts[9], g.size * 0.45)
-    }
-
-    // Where the background behind the hands hasn't been seen yet (hands in
-    // view from the start), compare with the colours just around the region.
-    const palette = this.ringPalette(px, x0, y0, x1, y1)
-
-    // Card pixels: not background, not skin, not hand.
     const mask = new Uint8Array(rw * rh)
-    const { cb: mcb, cr: mcr, vcb, vcr } = this.skin
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
-        const j = (y - y0) * rw + (x - x0)
-        if (handMask[j]) continue
-        const i = y * w + x
-        const r = px[i * 4]
-        const gg = px[i * 4 + 1]
-        const b = px[i * 4 + 2]
-        if (known[i]) {
-          const k = i * 3
-          if (Math.abs(r - bg[k]) + Math.abs(gg - bg[k + 1]) + Math.abs(b - bg[k + 2]) < FOREGROUND_DIFF) continue
-        } else {
-          let near = false
-          for (let p = 0; p < palette.length && !near; p += 3) {
-            near = Math.abs(r - palette[p]) + Math.abs(gg - palette[p + 1]) + Math.abs(b - palette[p + 2]) < FOREGROUND_DIFF
-          }
-          if (near) continue
-        }
-        if (this.skin.ready) {
-          const cb = 128 - 0.1687 * r - 0.3313 * gg + 0.5 * b
-          const cr = 128 + 0.5 * r - 0.4187 * gg - 0.0813 * b
-          const d = ((cb - mcb) * (cb - mcb)) / vcb + ((cr - mcr) * (cr - mcr)) / vcr
-          if (d < 6) continue
-        }
-        mask[j] = 1
+        const i = (y * w + x) * 4
+        if (deck.bins[colourBin(px[i], px[i + 1], px[i + 2])]) mask[(y - y0) * rw + (x - x0)] = 1
       }
     }
-    const clean = majority(mask, rw, rh)
-    const blobs = components(clean, rw, rh)
-
+    const blobs = components(majority(mask, rw, rh), rw, rh)
     const meanSize = geo.reduce((s, g) => s + g.size, 0) / geo.length
+    const deckArea = deck.areaHands * meanSize * meanSize
     const found: Omit<Packet, 'id'>[] = []
     for (const b of blobs) {
-      const area = b.n / (meanSize * meanSize)
-      if (area < MIN_AREA || area > MAX_AREA) continue
-      const mx = b.sx / b.n
-      const my = b.sy / b.n
-      const cxx = b.sxx / b.n - mx * mx
-      const cyy = b.syy / b.n - my * my
-      const cxy = b.sxy / b.n - mx * my
-      const angle = 0.5 * Math.atan2(2 * cxy, cxx - cyy)
-      const tr = cxx + cyy
-      const det = Math.sqrt(Math.max(0, ((cxx - cyy) / 2) ** 2 + cxy * cxy))
-      const l1 = tr / 2 + det
-      const l2 = Math.max(0, tr / 2 - det)
+      if (b.n < deckArea * MIN_DECK_SHARE || b.n > deckArea * MAX_DECK_SHARE) continue
+      const { mx, my, angle, l1, l2 } = eigen(b)
       const cx = mx + x0
       const cy = my + y0
-      // Nearest hand owns it.
       let hand: 0 | 1 | null = null
       let bestD = Infinity
       for (const g of geo) {
@@ -192,7 +344,7 @@ export class CardTracker {
           }
         }
       }
-      if (bestD > 2) hand = null
+      if (bestD > MAX_HAND_DIST || hand === null) continue
       found.push({
         cx: cx / w,
         cy: cy / h,
@@ -204,69 +356,7 @@ export class CardTracker {
       })
     }
     found.sort((a, b) => b.length * b.width - a.length * a.width)
-    const packets = this.track(found.slice(0, MAX_PACKETS), meanSize / h)
-    this.ms = performance.now() - t0
-    return packets
-  }
-
-  /** Background colours sampled on a ring just outside the hand region. */
-  private ringPalette(px: Uint8ClampedArray, x0: number, y0: number, x1: number, y1: number): number[] {
-    const out: number[] = []
-    const add = (x: number, y: number) => {
-      if (x < 0 || y < 0 || x >= this.w || y >= this.h) return
-      const i = (y * this.w + x) * 4
-      out.push(px[i], px[i + 1], px[i + 2])
-    }
-    const m = 3
-    for (let x = x0 - m; x <= x1 + m; x += 4) {
-      add(x, y0 - m)
-      add(x, y1 + m)
-    }
-    for (let y = y0 - m; y <= y1 + m; y += 4) {
-      add(x0 - m, y)
-      add(x1 + m, y)
-    }
-    return out
-  }
-
-  /** Skin colour (Cb/Cr mean and spread) from small patches under the palm and finger bases. */
-  private learnSkin(px: Uint8ClampedArray, geo: HandGeo[]) {
-    const samples: [number, number][] = []
-    for (const g of geo) {
-      for (const [a, b] of [
-        [0, 9],
-        [5, 9],
-        [9, 13],
-        [13, 17],
-        [0, 5],
-        [0, 17],
-        [5, 6],
-        [9, 10],
-        [13, 14],
-      ]) {
-        const x = Math.round((g.pts[a][0] + g.pts[b][0]) / 2)
-        const y = Math.round((g.pts[a][1] + g.pts[b][1]) / 2)
-        if (x < 0 || y < 0 || x >= this.w || y >= this.h) continue
-        const i = (y * this.w + x) * 4
-        const r = px[i]
-        const gg = px[i + 1]
-        const bl = px[i + 2]
-        samples.push([128 - 0.1687 * r - 0.3313 * gg + 0.5 * bl, 128 + 0.5 * r - 0.4187 * gg - 0.0813 * bl])
-      }
-    }
-    if (samples.length < 4) return
-    // Median is robust to a sample that landed on a card.
-    const med = (xs: number[]) => xs.sort((a, b) => a - b)[xs.length >> 1]
-    const cb = med(samples.map((s) => s[0]))
-    const cr = med(samples.map((s) => s[1]))
-    const vcb = Math.max(36, med(samples.map((s) => (s[0] - cb) ** 2)) * 2.5)
-    const vcr = Math.max(36, med(samples.map((s) => (s[1] - cr) ** 2)) * 2.5)
-    const k = this.skin.ready ? 0.1 : 1
-    this.skin.cb += (cb - this.skin.cb) * k
-    this.skin.cr += (cr - this.skin.cr) * k
-    this.skin.vcb += (vcb - this.skin.vcb) * k
-    this.skin.vcr += (vcr - this.skin.vcr) * k
-    this.skin.ready = true
+    return this.track(found.slice(0, MAX_PACKETS), meanSize / h)
   }
 
   /** Keeps packet ids stable frame to frame and smooths their shape. */
@@ -310,36 +400,17 @@ export class CardTracker {
   }
 }
 
-function paintSegment(
-  mask: Uint8Array,
-  rw: number,
-  rh: number,
-  x0: number,
-  y0: number,
-  a: [number, number],
-  b: [number, number],
-  r: number,
-) {
-  const ax = a[0] - x0
-  const ay = a[1] - y0
-  const bx = b[0] - x0
-  const by = b[1] - y0
-  const minX = Math.max(0, Math.floor(Math.min(ax, bx) - r))
-  const maxX = Math.min(rw - 1, Math.ceil(Math.max(ax, bx) + r))
-  const minY = Math.max(0, Math.floor(Math.min(ay, by) - r))
-  const maxY = Math.min(rh - 1, Math.ceil(Math.max(ay, by) + r))
-  const dx = bx - ax
-  const dy = by - ay
-  const len2 = dx * dx + dy * dy || 1
-  const r2 = r * r
-  for (let y = minY; y <= maxY; y++) {
-    for (let x = minX; x <= maxX; x++) {
-      const u = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len2))
-      const ex = ax + u * dx - x
-      const ey = ay + u * dy - y
-      if (ex * ex + ey * ey <= r2) mask[y * rw + x] = 1
-    }
-  }
+/** Centre, long-axis angle and the two variances of a blob. */
+function eigen(b: Blob) {
+  const mx = b.sx / b.n
+  const my = b.sy / b.n
+  const cxx = b.sxx / b.n - mx * mx
+  const cyy = b.syy / b.n - my * my
+  const cxy = b.sxy / b.n - mx * my
+  const angle = 0.5 * Math.atan2(2 * cxy, cxx - cyy)
+  const tr = cxx + cyy
+  const det = Math.sqrt(Math.max(0, ((cxx - cyy) / 2) ** 2 + cxy * cxy))
+  return { mx, my, angle, l1: tr / 2 + det, l2: Math.max(0, tr / 2 - det) }
 }
 
 /** 3×3 majority filter: removes speckle and fills pinholes. */

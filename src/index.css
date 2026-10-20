@@ -1378,3 +1378,40 @@ button.round {
   border-color: #5ef2ff;
   box-shadow: 0 0 10px rgba(94, 242, 255, 0.5);
 }
+
+/* Deck calibration */
+.deck-cal {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+}
+
+.deck-cal-text {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  width: min(92%, 420px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.deck-cal-text strong {
+  font-size: 1.05rem;
+}
+
+.deck-cal-text .primary {
+  margin-top: 6px;
+  min-width: 140px;
+}
+
+.deck-cal-actions {
+  display: flex;
+  gap: 18px;
+}

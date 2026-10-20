@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react'
 import { Library } from './components/Library'
 import { CardTracker } from './cards/cardTracker'
+import { loadDeck } from './cards/deckModel'
+import { DeckCalibration } from './components/DeckCalibration'
 import { CameraSettings } from './components/CameraSettings'
 import { MovePicker } from './components/MovePicker'
 import { loadRecordSetup, saveRecordSetup, type RecordSetupValue } from './recording/recordSetup'
@@ -110,7 +112,16 @@ export default function App() {
   const [trackCards, setTrackCards] = useState(() => readPref('cardistry.trackCards', true))
   const [showCards, setShowCards] = useState(() => readPref('cardistry.showCards', true))
   const [hud, setHud] = useState(() => readPref('cardistry.hud', true))
-  const cardTrackerRef = useRef<CardTracker | null>(null)
+  // One tracker for the app's life; it keeps the learned deck between camera sessions.
+  const [cardTracker] = useState(() => new CardTracker(loadDeck()))
+  const trackCardsRef = useRef(trackCards)
+  useEffect(() => {
+    trackCardsRef.current = trackCards
+  }, [trackCards])
+  /** Deck calibration for this camera session. */
+  const [deckStep, setDeckStep] = useState<'idle' | 'calibrating' | 'done'>('idle')
+  /** Cards skipped for this camera session. */
+  const [cardsSkipped, setCardsSkipped] = useState(false)
   const [autoStart, setAutoStart] = useState(() => {
     try {
       return localStorage.getItem('cardistry.autoStart') !== '0'
@@ -174,9 +185,10 @@ export default function App() {
         const loop = new TrackingLoop(video, canvasRef.current!, tracker.landmarker)
         // ?debug exposes the latest frame for automated tests.
         if (new URLSearchParams(location.search).has('debug')) {
-          const w = window as unknown as { __frame: unknown; __setIdentify: unknown }
+          const w = window as unknown as { __frame: unknown; __setIdentify: unknown; __cards: unknown }
           loop.onFrame((f) => (w.__frame = f))
           w.__setIdentify = setIdentify
+          w.__cards = cardTracker
         }
         loop.onFrame((f) => {
           setLabels((prev) => {
@@ -185,10 +197,17 @@ export default function App() {
             return prev[0] === next[0] && prev[1] === next[1] ? prev : next
           })
         })
-        cardTrackerRef.current?.reset()
         loop.start()
         loopRef.current = loop
         watcherRef.current = new MotionWatcher(loop)
+        // Card tracking starts by learning the deck: show the calibration overlay.
+        if (trackCardsRef.current) {
+          const cards = cardTracker
+          loop.cards = cards
+          cards.startCalibration()
+          setCardsSkipped(false)
+          setDeckStep('calibrating')
+        }
         setPhase('live')
         setCanSwitch(await hasMultipleCameras())
       } catch (err) {
@@ -197,7 +216,7 @@ export default function App() {
         setPhase('error')
       }
     },
-    [stop],
+    [stop, cardTracker],
   )
 
   useEffect(() => {
@@ -435,9 +454,19 @@ export default function App() {
   useEffect(() => {
     const loop = loopRef.current
     if (!loop) return
-    loop.cards = trackCards ? (cardTrackerRef.current ??= new CardTracker()) : null
+    loop.cards = trackCards && !cardsSkipped ? cardTracker : null
     loop.showCards = showCards
-  }, [trackCards, showCards, phase])
+  }, [trackCards, showCards, cardsSkipped, phase, cardTracker])
+
+  const finishDeck = useCallback(() => setDeckStep('done'), [])
+  const recalibrateDeck = () => {
+    const cards = cardTracker
+    cards.startCalibration()
+    setCardsSkipped(false)
+    setDeckStep('calibrating')
+    setShowSettings(false)
+  }
+
 
   const changeMode = (m: Mode) => {
     if (recState === 'ready') setMode(m)
@@ -464,6 +493,8 @@ export default function App() {
   }
 
   const live = phase === 'live'
+  const calibrating = live && trackCards && deckStep === 'calibrating'
+  const hasSavedDeck = calibrating && cardTracker.hasDeck
   const lowFps = live && stats.fps > 0 && stats.fps < 20
   const losingHands = live && stats.fps > 0 && Math.max(stats.presence[0], stats.presence[1]) < 0.6
 
@@ -533,7 +564,7 @@ export default function App() {
               <span className="rec-dot" /> REC {(elapsed / 1000).toFixed(1)}s / {MAX_RECORDING_MS / 1000}s
             </div>
           )}
-          {live && showGuide && recState === 'ready' && (
+          {live && showGuide && recState === 'ready' && !calibrating && (
             <div className="guide" aria-hidden="true">
               <span>Keep both hands and the deck inside the frame</span>
             </div>
@@ -570,6 +601,22 @@ export default function App() {
             </div>
           )}
 
+          {calibrating && (
+            <DeckCalibration
+              tracker={cardTracker}
+              hasSavedDeck={hasSavedDeck}
+              onDone={finishDeck}
+              onUseSaved={() => {
+                cardTracker.stopCalibration()
+                setDeckStep('done')
+              }}
+              onSkip={() => {
+                cardTracker.stopCalibration()
+                setCardsSkipped(true)
+                setDeckStep('done')
+              }}
+            />
+          )}
           {phase !== 'live' && (
             <div className="intro">
               {phase === 'loading' ? (
@@ -630,7 +677,7 @@ export default function App() {
                     else if (recState === 'countdown') setRecState('ready')
                     else startRecording()
                   }}
-                  disabled={recState === 'review' || (recState === 'ready' && !setup.moveName)}
+                  disabled={calibrating || recState === 'review' || (recState === 'ready' && !setup.moveName)}
                   aria-label={
                     recState === 'recording' || recState === 'armed'
                       ? 'Stop recording'
@@ -749,6 +796,9 @@ export default function App() {
               />
               Show card boxes on the camera
             </label>
+          )}
+          {trackCards && (
+            <button onClick={recalibrateDeck}>Learn my deck again</button>
           )}
           <label className="check">
             <input
