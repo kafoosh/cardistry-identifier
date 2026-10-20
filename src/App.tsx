@@ -420,7 +420,7 @@ export default function App() {
         shared: used.filter((t) => t.source === 'shared').length,
         sharedError,
       })
-      thresholdRef.current.base = (await matcher.selfTest()).threshold
+      thresholdRef.current.base = matcher.threshold
       if (cancelled || !loopRef.current) return
       if (!watcherRef.current) return
       identifier = new Identifier(

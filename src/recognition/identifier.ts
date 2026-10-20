@@ -6,15 +6,13 @@ import type { MotionWatcher } from './motionWatcher'
 import type { Matcher } from './matcher'
 import type { MatchQuery, MatchResult } from './matcher.worker'
 import type { MoveScore, Template } from './recognizer'
+import { chooseAnswer, MIN_STRENGTH } from './decide'
 
-const INTERVAL_MS = 400
+/** How often to match. Matching only looks at the end of the window, so this is cheap; a slow phone just skips ticks while busy. */
+const INTERVAL_MS = 250
 const HOLD_MS = 1500
 /** A guess has to stay the top answer this many matches in a row before it is shown: one lucky window isn't a move. */
 const CONFIRM_TICKS = 2
-/** Strength below this is a weak fit that isn't worth announcing. */
-const MIN_STRENGTH = 0.3
-/** The best move must beat the runner-up by this much strength, or the window is ambiguous and nothing is announced. */
-const MIN_MARGIN = 0.12
 
 /** Who a guess is about: one hand (by its tracked label), or both hands together. */
 export type HandLabel = 'Left' | 'Right' | 'Both'
@@ -176,26 +174,14 @@ export class Identifier {
   }
 }
 
-/**
- * The answer to show: a two-hand move when it fits about as well as the
- * best one-hand move (it explains both hands at once), otherwise the confident one-hand move in each hand.
- */
+/** The answer to show, as guesses per hand (see chooseAnswer). */
 function pickGuesses(result: MatchResult, label: (slot: 0 | 1) => HandLabel): HandGuess[] {
-  // A clear winner: strong enough, and well ahead of the next move.
-  const clear = (scores: MoveScore[]): MoveScore | undefined => {
-    const [top, next] = scores
-    if (!top || top.strength < MIN_STRENGTH) return undefined
-    if (next && top.strength - next.strength < MIN_MARGIN) return undefined
-    return top
+  const answer = chooseAnswer(result.both, result.single)
+  if ('both' in answer) {
+    const b = answer.both
+    return [{ hand: 'Both', moveName: b.moveName, strength: b.strength, withCards: Boolean(b.withCards) }]
   }
-  const both = clear(result.both)
-  const singles = result.single
-    .map((s) => ({ slot: s.slot, top: clear(s.scores) }))
-    .filter((s): s is { slot: 0 | 1; top: MoveScore } => s.top !== undefined)
-  const bestSingle = Math.max(0, ...singles.map((s) => s.top.strength))
-  if (both && both.strength >= bestSingle * 0.9)
-    return [{ hand: 'Both', moveName: both.moveName, strength: both.strength, withCards: Boolean(both.withCards) }]
-  return singles.map((s) => ({
+  return answer.singles.map((s) => ({
     hand: label(s.slot),
     slot: s.slot,
     moveName: s.top.moveName,
