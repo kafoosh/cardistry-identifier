@@ -30,9 +30,16 @@ const MAX_GAIN = 1.3
 const SEG_ANGLES = 36
 const SEG_RHO = 3
 const SEG_MIN_LEN = 0.35
-/** An edge that has sat in the same place for this many processed frames is furniture, not a card. */
-const BG_AGE = 30
-/** An edge-seeded rectangle whose sides are mostly such old edges is not a packet. */
+/**
+ * How long an edge has sat in one place: a level that rises by BG_RISE of the way to 1 on each
+ * processed frame the edge is there and falls by BG_FALL on each it isn't. Past BG_EDGE it is
+ * furniture, not a card: about 20 frames in place, and it stays furniture while a hand or a fan
+ * covers it for a few seconds.
+ */
+const BG_RISE = 0.04
+const BG_FALL = 0.01
+const BG_EDGE = 0.5
+/** A rectangle whose sides are mostly such old edges is not a new packet. */
 const MAX_STALE = 0.4
 /** Fans: hinge votes land in cells this wide; edge directions are binned this finely over 180°. */
 const FAN_CELL = 4
@@ -51,6 +58,19 @@ const FAN_MIN_TEXTURE = 0.25
 const FAN_CONFIRM = 2
 const FAN_MISSES = 3
 const MAX_FANS = 2
+/** A rectangle mostly over a hand (palm and fingers) is often the hand's own outline: it needs a clearer fit to count. */
+const HAND_COVER = 0.5
+const HAND_SCORE = 0.25
+/** Finger width as a share of hand size (wrist to middle knuckle), for telling what a hand covers. */
+const FINGER_R = 0.13
+const PALM = [0, 1, 5, 9, 13, 17]
+const FINGERS = [
+  [0, 1, 2, 3, 4],
+  [0, 5, 6, 7, 8],
+  [9, 10, 11, 12],
+  [13, 14, 15, 16],
+  [0, 17, 18, 19, 20],
+]
 
 /** Where the deck is held for calibration: a card-shaped box in the middle, in normalised frame coordinates. */
 export function calibrationBox(aspect: number) {
@@ -90,6 +110,11 @@ interface Rect {
 interface Track extends Rect {
   id: number
   misses: number
+}
+
+interface Fit {
+  rect: Rect
+  score: number
 }
 
 /** A fan in working-frame pixels: hinge, sector (counter-clockwise from `from` to `to`) and reach. */
@@ -145,8 +170,8 @@ export class CardTracker {
   private lastPx: Uint8ClampedArray | null = null
   /** 1 where a pixel is white-ish (bright and unsaturated). */
   private white = new Uint8Array(0)
-  /** How many processed frames in a row each pixel has been a strong edge (capped). */
-  private edgeAge = new Uint8Array(0)
+  /** How long each pixel has been a strong edge (see BG_RISE). */
+  private edgeAge = new Float32Array(0)
   private tracks: Track[] = []
   private fanTracks: FanTrack[] = []
   private fanTick = 0
@@ -275,7 +300,7 @@ export class CardTracker {
       this.gx = new Float32Array(n)
       this.gy = new Float32Array(n)
       this.white = new Uint8Array(n)
-      this.edgeAge = new Uint8Array(n)
+      this.edgeAge = new Float32Array(n)
     }
     const grey = new Float32Array(n)
     for (let i = 0; i < n; i++) grey[i] = px[i * 4] * 0.3 + px[i * 4 + 1] * 0.59 + px[i * 4 + 2] * 0.11
@@ -310,9 +335,8 @@ export class CardTracker {
     const strong = this.norm * 0.5
     const age = this.edgeAge
     for (let i = 0; i < n; i++) {
-      if (Math.abs(gx[i]) + Math.abs(gy[i]) >= strong) {
-        if (age[i] < 255) age[i]++
-      } else age[i] = 0
+      if (Math.abs(gx[i]) + Math.abs(gy[i]) >= strong) age[i] += (1 - age[i]) * BG_RISE
+      else age[i] *= 1 - BG_FALL
     }
   }
 
@@ -422,7 +446,7 @@ export class CardTracker {
         }
         if (bestI < 0 || best < this.norm * 0.3) continue
         hits++
-        if (edgeAge[bestI] >= BG_AGE) old++
+        if (edgeAge[bestI] >= BG_EDGE) old++
       }
     }
     for (const sign of [-1, 1]) {
@@ -1101,6 +1125,24 @@ export class CardTracker {
     return next.filter((t) => t.hits >= FAN_CONFIRM)
   }
 
+  /** Share of a rectangle that lies over a hand: its palm, or within a finger's width of a finger bone. */
+  private handCover(r: Rect, hands: HandGeo[]): number {
+    if (!hands.length) return 0
+    const ux = Math.cos(r.angle)
+    const uy = Math.sin(r.angle)
+    let n = 0
+    let over = 0
+    for (let a = -0.4; a < 0.45; a += 0.2) {
+      for (let b = -0.4; b < 0.45; b += 0.2) {
+        const x = r.cx + ux * r.length * a - uy * r.width * b
+        const y = r.cy + uy * r.length * a + ux * r.width * b
+        n++
+        if (hands.some((g) => overHand(g, x, y))) over++
+      }
+    }
+    return over / n
+  }
+
   private normalised(r: Rect): Omit<Packet, 'id' | 'hand'> {
     return { cx: r.cx / this.w, cy: r.cy / this.h, angle: r.angle, length: r.length / this.h, width: r.width / this.h }
   }
@@ -1142,33 +1184,36 @@ export class CardTracker {
 
     // Blobs anywhere (cropping to a region around the hands would cut a deck in half when the
     // tracker has lost the hand holding it); ones far from every hand are dropped at the end.
-    const found: Rect[] = []
+    const fits: Fit[] = []
     for (const { rect, fill } of this.blobs(0, 0, w - 1, h - 1)) {
       const area = rect.length * rect.width
       if (area < expectedArea * MIN_AREA || area > expectedArea * MAX_AREA) continue
       if (fill < MIN_FILL) continue
       const fit = this.fitCard(rect, limits)
-      if (!fit || fit.score < DETECT_SCORE) continue
-      // A rectangle inside a fan is the fan's outline, not a packet.
-      if (fans.some((f) => inSector(f, fit.rect.cx, fit.rect.cy))) continue
-      found.push(fit.rect)
+      if (fit && fit.score >= DETECT_SCORE) fits.push(fit)
     }
     // Backs without a white border don't make a blob; their straight sides still give them away.
     for (const fit of this.borderless ? this.edgeFits(near, expected, limits) : []) {
-      if (fans.some((f) => inSector(f, fit.rect.cx, fit.rect.cy))) continue
       // Edges alone also outline drawers and shelves; those have been there all along.
-      if (this.staleness(fit.rect) > MAX_STALE) continue
-      if (
-        found.some((o) => Math.hypot(o.cx - fit.rect.cx, o.cy - fit.rect.cy) < Math.min(o.width, fit.rect.width) * 0.6)
-      )
-        continue
-      found.push(fit.rect)
+      if (this.staleness(fit.rect) <= MAX_STALE) fits.push(fit)
+    }
+    // Best first, and one rectangle per packet: two blobs of one packet (a finger across it) or a
+    // blob and an edge run often land on the same card.
+    const found: Rect[] = []
+    for (const fit of fits.sort((a, b) => b.score - a.score)) {
+      const r = fit.rect
+      // A rectangle inside a fan is the fan's outline, not a packet.
+      if (fans.some((f) => inSector(f, r.cx, r.cy))) continue
+      // Pale skin reads as white, so a hand can outline itself; a card held over it still fits clearly.
+      if (fit.score < HAND_SCORE && this.handCover(r, near) > HAND_COVER) continue
+      if (found.some((o) => overlaps(o, r))) continue
+      found.push(r)
     }
 
     // Match to known packets so ids stay put and outlines glide; a packet missing for a frame or two is kept.
     const used = new Set<number>()
     const next: Track[] = []
-    for (const f of found.sort((a, b) => b.length * b.width - a.length * a.width).slice(0, MAX_PACKETS)) {
+    for (const f of found.slice(0, MAX_PACKETS)) {
       let best: Track | null = null
       let bestD = Math.min(f.length, expected) * 0.6
       for (const t of this.tracks) {
@@ -1182,14 +1227,20 @@ export class CardTracker {
       if (best) {
         used.add(best.id)
         next.push({ ...smooth(best, f), id: best.id, misses: 0 })
-      } else if (near.length) next.push({ ...f, id: this.nextId++, misses: 0 })
+      } else if (near.length && this.staleness(f) <= MAX_STALE) {
+        // A new packet whose outline has sat in place for seconds is part of the room (a book, a frame).
+        next.push({ ...f, id: this.nextId++, misses: 0 })
+      }
       // With no hand seen for a while, only packets already being followed carry on; nothing new
       // starts, so a shelf can't become a packet.
     }
     for (const t of this.tracks) {
       if (used.has(t.id) || t.misses >= 2) continue
       // Still on its edges? Then it's just not a clean blob this frame (a finger across it, say).
-      if (this.score(t) >= KEEP_SCORE) next.push({ ...t, misses: t.misses + 1 })
+      const sc = this.score(t)
+      if (sc < KEEP_SCORE || (sc < HAND_SCORE && this.handCover(t, near) > HAND_COVER)) continue
+      if (next.some((o) => overlaps(o, t))) continue
+      next.push({ ...t, misses: t.misses + 1 })
     }
     this.tracks = next
 
@@ -1217,6 +1268,42 @@ export class CardTracker {
 
 function mean(v: number[]) {
   return v.reduce((s, x) => s + x, 0) / v.length
+}
+
+/** Whether two rectangles are one packet: either's centre lies well inside the other. */
+function overlaps(a: Rect, b: Rect) {
+  const inside = (p: Rect, q: Rect) => {
+    const dx = q.cx - p.cx
+    const dy = q.cy - p.cy
+    const u = dx * Math.cos(p.angle) + dy * Math.sin(p.angle)
+    const v = -dx * Math.sin(p.angle) + dy * Math.cos(p.angle)
+    return Math.abs(u) < p.length * 0.3 && Math.abs(v) < p.width * 0.3
+  }
+  return inside(a, b) || inside(b, a)
+}
+
+/** Whether a point is over a hand: inside the palm, or within a finger's width of a finger bone. */
+function overHand(g: HandGeo, x: number, y: number) {
+  const p = g.pts
+  let inPalm = false
+  for (let i = 0, j = PALM.length - 1; i < PALM.length; j = i++) {
+    const [xi, yi] = p[PALM[i]]
+    const [xj, yj] = p[PALM[j]]
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inPalm = !inPalm
+  }
+  if (inPalm) return true
+  const rad = g.size * FINGER_R
+  for (const f of FINGERS) {
+    for (let k = 0; k + 1 < f.length; k++) {
+      const [ax, ay] = p[f[k]]
+      const [bx, by] = p[f[k + 1]]
+      const dx = bx - ax
+      const dy = by - ay
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)))
+      if (Math.hypot(x - ax - t * dx, y - ay - t * dy) < rad) return true
+    }
+  }
+  return false
 }
 
 /** Whether a point lies in the fan's sector (a little beyond its reach counts too). */
