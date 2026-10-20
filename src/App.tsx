@@ -43,6 +43,8 @@ function remember(key: string, on: boolean) {
 /** Stillness that ends an automatic take, and the shortest take auto-stop allows. */
 const AUTO_STOP_STILL_MS = 1200
 const AUTO_STOP_MIN_MS = 1000
+/** While armed and waiting, restart the background recording this long before it would hit the limit. */
+const ARMED_RESTART_MARGIN_MS = 8000
 
 type RecState = 'ready' | 'countdown' | 'armed' | 'recording' | 'review'
 type Mode = 'record' | 'identify'
@@ -200,21 +202,31 @@ export default function App() {
     recorderRef.current = null
     // Respond to the tap straight away; the clip can take a moment to finalise.
     setRecState('review')
-    const raw = await rec.stop()
-    // Suggest cutting the idle time before and after the move; the review sheet lets the user adjust it.
-    const span = activeSpan(raw.frames)
-    const cap: Capture = {
-      ...raw,
-      suggestedTrim: span && span.endMs - span.startMs >= 300 ? span : undefined,
+    try {
+      const raw = await rec.stop()
+      if (raw.frames.length < 2) {
+        setSavedNote('Nothing was recorded. Check your hands are in view and try again.')
+        setRecState('ready')
+        return
+      }
+      // Suggest cutting the idle time before and after the move; the review sheet lets the user adjust it.
+      const span = activeSpan(raw.frames)
+      const cap: Capture = {
+        ...raw,
+        suggestedTrim: span && span.endMs - span.startMs >= 300 ? span : undefined,
+      }
+      const v = videoRef.current
+      if (v?.videoWidth) setVideoSize({ width: v.videoWidth, height: v.videoHeight })
+      setCapture(cap)
+    } catch (err) {
+      setSavedNote(`Couldn't finish the take: ${err instanceof Error ? err.message : err}`)
+      setRecState('ready')
     }
-    const v = videoRef.current
-    if (v?.videoWidth) setVideoSize({ width: v.videoWidth, height: v.videoHeight })
-    setCapture(cap)
-    setRecState('review')
   }, [])
 
+  /** Starts capturing. In auto mode it starts 'armed': already recording, so a move that never trips the motion detector isn't lost. */
   const beginCapture = useCallback(
-    (preroll: Parameters<Recorder['start']>[1]) => {
+    (preroll: Parameters<Recorder['start']>[1], state: 'recording' | 'armed' = 'recording') => {
       const loop = loopRef.current
       const stream = streamRef.current
       if (!loop || !stream || recorderRef.current) return
@@ -222,7 +234,7 @@ export default function App() {
       rec.start(recordVideo && canRecordVideo(), preroll)
       recorderRef.current = rec
       setElapsed(0)
-      setRecState('recording')
+      setRecState(state)
     },
     [finishRecording, recordVideo],
   )
@@ -238,22 +250,32 @@ export default function App() {
     if (recState !== 'countdown') return
     const id = setTimeout(() => {
       if (countdown > 1) setCountdown((c) => c - 1)
-      else if (autoStart) setRecState('armed')
-      else beginCapture([])
+      else beginCapture([], autoStart ? 'armed' : 'recording')
     }, 1000)
     return () => clearTimeout(id)
   }, [recState, countdown, autoStart, beginCapture])
 
-  // Auto-start: wait for fresh finger motion, then record from just before it.
-  // Motion already under way when arming (fidgeting during the countdown)
-  // has to settle first, so a take never starts half-way through something.
+  // Auto-start: the take is already recording while armed; fresh finger
+  // motion marks the start (the review trims the wait). Motion already under
+  // way when arming has to settle first. If nothing happens for a long time,
+  // the recording restarts quietly so the take never fills with waiting.
   useEffect(() => {
     const watcher = watcherRef.current
     if (recState !== 'armed' || !watcher) return
     let settled = !watcher.latest.active
     return watcher.onSample((s) => {
       if (!s.active) settled = true
-      else if (settled) beginCapture(watcher.recent(700))
+      else if (settled) {
+        setElapsed(0)
+        setRecState('recording')
+        return
+      }
+      const rec = recorderRef.current
+      if (rec && rec.elapsedMs > MAX_RECORDING_MS - ARMED_RESTART_MARGIN_MS) {
+        rec.cancel()
+        recorderRef.current = null
+        beginCapture(watcher.recent(1500), 'armed')
+      }
     })
   }, [recState, beginCapture])
 
@@ -263,11 +285,12 @@ export default function App() {
     const watcher = watcherRef.current
     if (recState !== 'recording' || !autoStart || !watcher) return
     let stillSince: number | null = null
+    let startedAt: number | null = null
     return watcher.onSample((s) => {
+      startedAt ??= s.t
       if (s.moving) stillSince = null
       else stillSince ??= s.t
-      const elapsed = recorderRef.current?.elapsedMs ?? 0
-      if (stillSince !== null && s.t - stillSince >= AUTO_STOP_STILL_MS && elapsed >= AUTO_STOP_MIN_MS)
+      if (stillSince !== null && s.t - stillSince >= AUTO_STOP_STILL_MS && s.t - startedAt >= AUTO_STOP_MIN_MS)
         void finishRecording()
     })
   }, [recState, autoStart, finishRecording])
@@ -481,8 +504,11 @@ export default function App() {
           <canvas ref={canvasRef} className={mirror ? 'mirror' : ''} />
           {live && recState === 'countdown' && <div className="countdown">{countdown}</div>}
           {live && recState === 'armed' && (
-            <div className="rec-indicator">Ready. Start the move whenever you like…</div>
+            <div className="rec-indicator">
+              <span className="rec-dot" /> Recording. Start the move whenever you like…
+            </div>
           )}
+          {live && recState === 'review' && !capture && <div className="rec-indicator">Finishing the take…</div>}
           {live && recState === 'recording' && (
             <div className="rec-indicator">
               <span className="rec-dot" /> REC {(elapsed / 1000).toFixed(1)}s / {MAX_RECORDING_MS / 1000}s
@@ -565,14 +591,21 @@ export default function App() {
               </button>
               {mode === 'record' ? (
                 <button
-                  className={`shutter ${recState === 'recording' ? 'is-recording' : ''} ${recState === 'countdown' || recState === 'armed' ? 'is-waiting' : ''}`}
+                  className={`shutter ${recState === 'recording' || recState === 'armed' ? 'is-recording' : ''} ${recState === 'countdown' ? 'is-waiting' : ''}`}
                   onClick={() => {
-                    if (recState === 'recording') void finishRecording()
-                    else if (recState === 'countdown' || recState === 'armed') setRecState('ready')
+                    // Armed is already recording, so a tap there stops and keeps the take too.
+                    if (recState === 'recording' || recState === 'armed') void finishRecording()
+                    else if (recState === 'countdown') setRecState('ready')
                     else startRecording()
                   }}
                   disabled={recState === 'review' || (recState === 'ready' && !setup.moveName)}
-                  aria-label={recState === 'recording' ? 'Stop recording' : recState === 'ready' ? 'Record' : 'Cancel'}
+                  aria-label={
+                    recState === 'recording' || recState === 'armed'
+                      ? 'Stop recording'
+                      : recState === 'ready'
+                        ? 'Record'
+                        : 'Cancel'
+                  }
                 >
                   <span />
                 </button>
@@ -593,7 +626,7 @@ export default function App() {
                   : recState === 'countdown'
                     ? 'Get ready… tap to cancel'
                     : recState === 'armed'
-                      ? 'Starts when your fingers move. Tap to cancel'
+                      ? 'Do the move. It stops when your fingers settle, or tap to stop'
                       : !setup.moveName
                         ? 'Name the move above first'
                         : autoStart
