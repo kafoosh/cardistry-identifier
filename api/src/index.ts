@@ -6,17 +6,24 @@ export interface Env {
   ALLOWED_ORIGINS: string
   DAILY_UPLOAD_LIMIT: string
   TURNSTILE_SECRET?: string
+  /** Lets the admin page in; set with `wrangler secret put ADMIN_TOKEN`. Admin routes are off while it is unset. */
+  ADMIN_TOKEN?: string
 }
 
 const MAX_BODY_BYTES = 1_500_000
 
 class HttpError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  code?: string
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
+
+/** How many of their own takes one device may share per move; admins are not capped. */
+const TAKES_PER_MOVE = 10
 
 // ---------- helpers ----------
 
@@ -26,8 +33,8 @@ function corsHeaders(req: Request, env: Env): Record<string, string> {
   if (!allowed.includes(origin)) return {}
   return {
     'Access-Control-Allow-Origin': origin,
-    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Delete-Key, X-Device-Id',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Delete-Key, X-Device-Id, X-Admin-Token',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   }
@@ -219,7 +226,10 @@ async function resolveMove(env: Env, rawName: string, deviceId: string): Promise
   for (let i = 0; move?.status === 'merged' && move.merged_into && i < 5; i++) {
     move = await env.DB.prepare(`SELECT * FROM moves WHERE id = ?1`).bind(move.merged_into).first<MoveRow>()
   }
+  if (move?.status === 'rejected') throw new HttpError(400, `"${move.name}" was turned down as a move name. Pick one of the listed moves.`)
   if (move) return move
+  if ((await getSetting(env, 'accept_proposed_moves', '1')) !== '1')
+    throw new HttpError(400, 'New move names are not being accepted right now. Pick one of the listed moves.')
   const id = crypto.randomUUID()
   await env.DB.prepare(
     `INSERT INTO moves (id, name, slug, status, created_by, created_at) VALUES (?1, ?2, ?3, 'proposed', ?4, ?5)`,
@@ -274,7 +284,14 @@ type StoreResult =
   | { id: string; status: string; duplicate: true; move: { id: string; name: string; slug: string; status: string } }
 
 /** Validates and stores one recording. Identical landmark data already in the library is not stored twice. */
-async function storeRecording(env: Env, item: UploadItem, deviceId: string, nickname: string, ip: string | null): Promise<StoreResult> {
+async function storeRecording(
+  env: Env,
+  item: UploadItem,
+  deviceId: string,
+  nickname: string,
+  ip: string | null,
+  admin: boolean,
+): Promise<StoreResult> {
   const err = validateSequence(item.sequence)
   if (err) throw new HttpError(422, `Recording rejected: ${err}`)
   const seq = item.sequence as WireSequence
@@ -307,6 +324,19 @@ async function storeRecording(env: Env, item: UploadItem, deviceId: string, nick
   const meta = cleanMeta(item.meta)
 
   const move = await resolveMove(env, item.moveName ?? '', deviceId)
+  if (!admin) {
+    const own = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM recordings WHERE device_id = ?1 AND move_id = ?2 AND status != 'rejected'`,
+    )
+      .bind(deviceId, move.id)
+      .first<{ n: number }>()
+    if ((own?.n ?? 0) >= TAKES_PER_MOVE)
+      throw new HttpError(
+        409,
+        `You have already shared ${TAKES_PER_MOVE} takes of ${move.name}. Delete one of yours to share another.`,
+        'move_cap',
+      )
+  }
   const id = crypto.randomUUID()
   const deleteKey = randomKey()
   const gz = await gzip(seqJson)
@@ -353,7 +383,8 @@ async function uploadRecording(req: Request, env: Env) {
   const ip = req.headers.get('CF-Connecting-IP')
   await verifyTurnstile(env, body.turnstileToken, ip)
   if (!isUuid(body.deviceId)) throw new HttpError(400, 'Missing device id')
-  const result = await storeRecording(env, body, body.deviceId.toLowerCase(), cleanText(body.nickname, 30), ip)
+  const admin = await isAdmin(req, env)
+  const result = await storeRecording(env, body, body.deviceId.toLowerCase(), cleanText(body.nickname, 30), ip, admin)
   return json(result, result.duplicate ? 200 : 201)
 }
 
@@ -368,13 +399,14 @@ async function uploadBatch(req: Request, env: Env) {
   if (items.length > MAX_BATCH) throw new HttpError(400, `At most ${MAX_BATCH} recordings at a time`)
   const deviceId = body.deviceId.toLowerCase()
   const nickname = cleanText(body.nickname, 30)
+  const admin = await isAdmin(req, env)
   const results = []
   for (const item of items) {
     try {
-      results.push({ ok: true, ...(await storeRecording(env, item, deviceId, nickname, ip)) })
+      results.push({ ok: true, ...(await storeRecording(env, item, deviceId, nickname, ip, admin)) })
     } catch (err) {
       if (!(err instanceof HttpError)) throw err
-      results.push({ ok: false, error: err.message })
+      results.push({ ok: false, error: err.message, code: err.code })
       // Stop once the daily limit is hit; the rest would fail the same way.
       if (err.status === 429) break
     }
@@ -396,6 +428,148 @@ async function deleteRecording(req: Request, env: Env, id: string) {
   return json({ deleted: true })
 }
 
+// ---------- settings ----------
+
+async function getSetting(env: Env, key: string, fallback: string): Promise<string> {
+  const row = await env.DB.prepare(`SELECT value FROM settings WHERE key = ?1`).bind(key).first<{ value: string }>()
+  return row?.value ?? fallback
+}
+
+// ---------- admin ----------
+
+const MOVE_STATUSES = new Set(['approved', 'proposed', 'rejected'])
+const RECORDING_STATUSES = new Set(['approved', 'pending', 'rejected'])
+
+/** True when the request carries the admin token. Without a token configured nobody is admin. */
+async function isAdmin(req: Request, env: Env): Promise<boolean> {
+  const expected = env.ADMIN_TOKEN?.trim()
+  const given = req.headers.get('X-Admin-Token') ?? ''
+  if (!expected || !given) return false
+  // Compare hashes, so the comparison takes the same time whatever was sent.
+  return (await sha256Hex(given)) === (await sha256Hex(expected))
+}
+
+/** Admin routes need the admin token; without one configured they are off altogether. */
+async function requireAdmin(req: Request, env: Env) {
+  if (!env.ADMIN_TOKEN?.trim()) throw new HttpError(503, 'The admin token is not set up yet')
+  if (!(await isAdmin(req, env))) throw new HttpError(401, 'Wrong admin token')
+}
+
+interface ReportRow {
+  id: string
+  target_type: string
+  target_id: string
+  reason: string | null
+  device_id: string | null
+  resolved: number
+  created_at: number
+}
+
+async function adminOverview(env: Env) {
+  const [moves, recordings, reports, accept] = await Promise.all([
+    env.DB.prepare(
+      `SELECT m.*, COUNT(r.id) AS recording_count, m.created_by AS created_by, m.created_at AS created_at
+       FROM moves m LEFT JOIN recordings r ON r.move_id = m.id AND r.status != 'rejected'
+       GROUP BY m.id ORDER BY m.status = 'proposed' DESC, recording_count DESC, m.name`,
+    ).all<MoveRow & { recording_count: number; created_by: string | null; created_at: number }>(),
+    env.DB.prepare(
+      `SELECT r.*, m.name AS move_name FROM recordings r JOIN moves m ON m.id = r.move_id
+       ORDER BY r.status = 'pending' DESC, r.created_at DESC LIMIT 200`,
+    ).all<RecordingRow & { move_name: string }>(),
+    env.DB.prepare(`SELECT * FROM reports WHERE resolved = 0 ORDER BY created_at DESC LIMIT 100`).all<ReportRow>(),
+    getSetting(env, 'accept_proposed_moves', '1'),
+  ])
+  return json({
+    settings: { acceptProposedMoves: accept === '1' },
+    moves: moves.results.map((m) => ({
+      ...moveOut(m),
+      mergedInto: m.merged_into,
+      createdBy: m.created_by,
+      createdAt: m.created_at,
+    })),
+    recordings: recordings.results.map((r) => ({ ...recordingOut(r, null), moveName: r.move_name, deviceId: r.device_id })),
+    reports: reports.results.map((r) => ({
+      id: r.id,
+      targetType: r.target_type,
+      targetId: r.target_id,
+      reason: r.reason,
+      createdAt: r.created_at,
+    })),
+  })
+}
+
+async function adminSettings(req: Request, env: Env) {
+  const body = await readJson<{ acceptProposedMoves?: unknown }>(req, 10_000)
+  if (typeof body.acceptProposedMoves === 'boolean') {
+    await env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('accept_proposed_moves', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1`)
+      .bind(body.acceptProposedMoves ? '1' : '0')
+      .run()
+  }
+  return json({ settings: { acceptProposedMoves: (await getSetting(env, 'accept_proposed_moves', '1')) === '1' } })
+}
+
+/** Approve, turn down, rename or merge a move. Merging moves its takes to the target and hides the name. */
+async function adminMove(req: Request, env: Env, id: string) {
+  const body = await readJson<{ status?: unknown; name?: unknown; mergeInto?: unknown }>(req, 10_000)
+  const move = await env.DB.prepare(`SELECT * FROM moves WHERE id = ?1`).bind(id).first<MoveRow>()
+  if (!move) throw new HttpError(404, 'Move not found')
+  if (typeof body.mergeInto === 'string') {
+    const target = await env.DB.prepare(`SELECT * FROM moves WHERE id = ?1`).bind(body.mergeInto).first<MoveRow>()
+    if (!target || target.id === move.id || target.status === 'merged') throw new HttpError(400, 'Pick another move to merge into')
+    const aliases = JSON.parse(target.aliases || '[]') as string[]
+    if (!aliases.some((a) => a.toLowerCase() === move.name.toLowerCase())) aliases.push(move.name)
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE recordings SET move_id = ?1 WHERE move_id = ?2`).bind(target.id, move.id),
+      env.DB.prepare(`UPDATE moves SET status = 'merged', merged_into = ?1 WHERE id = ?2`).bind(target.id, move.id),
+      env.DB.prepare(`UPDATE moves SET aliases = ?1 WHERE id = ?2`).bind(JSON.stringify(aliases), target.id),
+    ])
+  } else {
+    const sets: string[] = []
+    const binds: unknown[] = []
+    if (typeof body.status === 'string') {
+      if (!MOVE_STATUSES.has(body.status)) throw new HttpError(400, 'Bad status')
+      sets.push(`status = ?${binds.length + 1}`)
+      binds.push(body.status)
+    }
+    if (typeof body.name === 'string') {
+      const name = cleanText(body.name, 60)
+      const slug = slugify(name)
+      if (!slug) throw new HttpError(400, 'Name is required')
+      const clash = await env.DB.prepare(`SELECT id FROM moves WHERE slug = ?1 AND id != ?2`).bind(slug, id).first()
+      if (clash) throw new HttpError(400, 'Another move already has that name')
+      sets.push(`name = ?${binds.length + 1}`, `slug = ?${binds.length + 2}`)
+      binds.push(name, slug)
+    }
+    if (sets.length) {
+      binds.push(id)
+      await env.DB.prepare(`UPDATE moves SET ${sets.join(', ')} WHERE id = ?${binds.length}`).bind(...binds).run()
+    }
+  }
+  const updated = await env.DB.prepare(`SELECT * FROM moves WHERE id = ?1`).bind(id).first<MoveRow>()
+  return json({ move: updated ? moveOut(updated) : null })
+}
+
+async function adminRecording(req: Request, env: Env, id: string) {
+  if (req.method === 'DELETE') {
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM recording_data WHERE recording_id = ?1`).bind(id),
+      env.DB.prepare(`DELETE FROM votes WHERE recording_id = ?1`).bind(id),
+      env.DB.prepare(`DELETE FROM recordings WHERE id = ?1`).bind(id),
+    ])
+    return json({ deleted: true })
+  }
+  const body = await readJson<{ status?: unknown }>(req, 10_000)
+  if (typeof body.status !== 'string' || !RECORDING_STATUSES.has(body.status)) throw new HttpError(400, 'Bad status')
+  const r = await env.DB.prepare(`UPDATE recordings SET status = ?1 WHERE id = ?2 RETURNING *`).bind(body.status, id).first<RecordingRow>()
+  if (!r) throw new HttpError(404, 'Recording not found')
+  return json({ recording: recordingOut(r, null) })
+}
+
+async function adminReport(env: Env, id: string) {
+  await env.DB.prepare(`UPDATE reports SET resolved = 1 WHERE id = ?1`).bind(id).run()
+  return json({ resolved: true })
+}
+
 // ---------- router ----------
 
 async function route(req: Request, env: Env): Promise<Response> {
@@ -412,6 +586,15 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (req.method === 'POST' && path === '/api/recordings') return uploadRecording(req, env)
   if (req.method === 'POST' && path === '/api/recordings/batch') return uploadBatch(req, env)
   if (req.method === 'DELETE' && (m = path.match(/^\/api\/recordings\/([0-9a-f-]{36})$/))) return deleteRecording(req, env, m[1])
+  if (path.startsWith('/api/admin/')) {
+    await requireAdmin(req, env)
+    if (req.method === 'GET' && path === '/api/admin/overview') return adminOverview(env)
+    if (req.method === 'PATCH' && path === '/api/admin/settings') return adminSettings(req, env)
+    if (req.method === 'PATCH' && (m = path.match(/^\/api\/admin\/moves\/([0-9a-z-]{1,60})$/))) return adminMove(req, env, m[1])
+    if ((req.method === 'PATCH' || req.method === 'DELETE') && (m = path.match(/^\/api\/admin\/recordings\/([0-9a-f-]{36})$/)))
+      return adminRecording(req, env, m[1])
+    if (req.method === 'PATCH' && (m = path.match(/^\/api\/admin\/reports\/([0-9a-z-]{1,60})$/))) return adminReport(env, m[1])
+  }
   throw new HttpError(404, 'Not found')
 }
 
@@ -423,7 +606,7 @@ export default {
     try {
       res = await route(req, env)
     } catch (err) {
-      if (err instanceof HttpError) res = json({ error: err.message }, err.status)
+      if (err instanceof HttpError) res = json({ error: err.message, ...(err.code ? { code: err.code } : {}) }, err.status)
       else {
         console.error(err)
         res = json({ error: 'Server error' }, 500)
