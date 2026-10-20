@@ -90,7 +90,7 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
     if (!items?.length) return
     let cancelled = false
     void loadLocalTemplates()
-      .then((templates) => getMatcher().setTemplates(templates))
+      .then(({ templates }) => getMatcher().setTemplates(templates))
       .then((ids) => !cancelled && setOutliers(new Set(ids)))
     return () => {
       cancelled = true
@@ -99,7 +99,7 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
 
   const runSelfTest = async () => {
     setTest('running')
-    const templates = await loadLocalTemplates()
+    const { templates } = await loadLocalTemplates()
     const matcher = getMatcher()
     setOutliers(new Set(await matcher.setTemplates(templates)))
     setTest(await matcher.selfTest())

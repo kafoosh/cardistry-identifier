@@ -9,7 +9,7 @@ import { Identifier, type IdentifyState } from './recognition/identifier'
 import { MOTION_ON, trimIdle } from './recognition/motion'
 import { MotionWatcher } from './recognition/motionWatcher'
 import { getMatcher } from './recognition/shared'
-import { loadLocalTemplates } from './recognition/templates'
+import { loadTemplates } from './recognition/templates'
 import { canRecordVideo, describeDevice, longestGapMs, MAX_RECORDING_MS, qualityScore, Recorder, type Capture } from './recording/recorder'
 import { requestPersistentStorage, saveRecording } from './storage/db'
 import { describeCameraError, hasMultipleCameras, openCamera, stopStream } from './tracking/camera'
@@ -80,7 +80,7 @@ export default function App() {
   const [motion, setMotion] = useState({ energy: 0, active: false })
   const [mode, setMode] = useState<Mode>('record')
   const [identify, setIdentify] = useState<IdentifyState | null>(null)
-  const [templateInfo, setTemplateInfo] = useState({ templates: 0, moves: 0 })
+  const [templateInfo, setTemplateInfo] = useState({ templates: 0, moves: 0, shared: 0, sharedError: false })
   const [sensitivity, setSensitivity] = useState(1)
   const thresholdRef = useRef({ base: 1, sensitivity: 1 })
   useEffect(() => {
@@ -287,12 +287,17 @@ export default function App() {
     let cancelled = false
     setIdentify(null)
     void (async () => {
-      const templates = await loadLocalTemplates()
+      const { templates, sharedError } = await loadTemplates()
       if (cancelled || !loopRef.current) return
       const matcher = getMatcher()
       const outliers = new Set(await matcher.setTemplates(templates))
       const used = templates.filter((t) => !outliers.has(t.id))
-      setTemplateInfo({ templates: used.length, moves: new Set(used.map((t) => t.moveName)).size })
+      setTemplateInfo({
+        templates: used.length,
+        moves: new Set(used.map((t) => t.moveName)).size,
+        shared: used.filter((t) => t.source === 'shared').length,
+        sharedError,
+      })
       thresholdRef.current.base = (await matcher.selfTest()).threshold
       if (cancelled || !loopRef.current) return
       if (!watcherRef.current) return
@@ -450,6 +455,8 @@ export default function App() {
               state={identify}
               templateCount={templateInfo.templates}
               moveCount={templateInfo.moves}
+              sharedCount={templateInfo.shared}
+              sharedError={templateInfo.sharedError}
               sensitivity={sensitivity}
               onSensitivity={setSensitivity}
               onRecord={() => setMode('record')}
