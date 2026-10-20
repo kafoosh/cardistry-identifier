@@ -141,10 +141,15 @@ export class Identifier {
     this.busy = true
     try {
       const { result, ms } = await this.matcher.match(query, this.threshold())
+      // Candidates under the announcing strength are noise (a two-hand move faintly resembling a one-hand window); don't list them.
+      const worth = (scores: MoveScore[]) => scores.filter((m) => m.strength >= MIN_STRENGTH).slice(0, 3)
       const groups: IdentifyState['groups'] = []
-      if (result.both.length) groups.push({ hand: 'Both', scores: result.both.slice(0, 3) })
-      for (const s of result.single)
-        if (s.scores.length) groups.push({ hand: label(s.slot), scores: s.scores.slice(0, 3) })
+      const both = worth(result.both)
+      if (both.length) groups.push({ hand: 'Both', scores: both })
+      for (const s of result.single) {
+        const scores = worth(s.scores)
+        if (scores.length) groups.push({ hand: label(s.slot), scores })
+      }
       const guesses = pickGuesses(result, label)
       groups.sort((a, b) => (b.scores[0]?.strength ?? 0) - (a.scores[0]?.strength ?? 0))
       // Only a guess that holds across consecutive matches becomes the answer.
