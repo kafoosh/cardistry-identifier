@@ -624,6 +624,7 @@ export default function App() {
           {calibrating && (
             <DeckCalibration
               tracker={cardTracker}
+              mirror={mirror}
               hasSavedDeck={hasSavedDeck}
               onDone={finishDeck}
               onUseSaved={() => {

@@ -8,6 +8,8 @@ interface Props {
   onDone: () => void
   onUseSaved: () => void
   onSkip: () => void
+  /** Whether the preview is mirrored, so the fitted outline lines up with it. */
+  mirror: boolean
 }
 
 /**
@@ -15,7 +17,7 @@ interface Props {
  * in it, back to the camera, for a moment teaches the tracker the deck's
  * colours and size; then a confirmation, and recording can start.
  */
-export function DeckCalibration({ tracker, hasSavedDeck, onDone, onUseSaved, onSkip }: Props) {
+export function DeckCalibration({ tracker, hasSavedDeck, onDone, onUseSaved, onSkip, mirror }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [cal, setCal] = useState<CalibrationState>(tracker.calibration)
 
@@ -56,6 +58,19 @@ export function DeckCalibration({ tracker, hasSavedDeck, onDone, onUseSaved, onS
       ctx.setLineDash(done ? [] : [10 * unit, 8 * unit])
       ctx.strokeRect(x, y, bw, bh)
       ctx.setLineDash([])
+      if (c.found) {
+        // The rectangle fitted to the deck, mirrored like the preview.
+        const f = c.found
+        const fx = (mirror ? 1 - f.cx : f.cx) * w
+        const ang = mirror ? Math.PI - f.angle : f.angle
+        ctx.save()
+        ctx.translate(fx, f.cy * h)
+        ctx.rotate(ang)
+        ctx.strokeStyle = done ? '#4ade80' : '#2dd4bf'
+        ctx.lineWidth = 2 * unit
+        ctx.strokeRect((-f.length * h) / 2, (-f.width * h) / 2, f.length * h, f.width * h)
+        ctx.restore()
+      }
       if (c.phase === 'holding' && c.progress > 0) {
         // Progress runs around the box outline.
         const per = 2 * (bw + bh)
@@ -84,14 +99,14 @@ export function DeckCalibration({ tracker, hasSavedDeck, onDone, onUseSaved, onS
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [tracker])
+  }, [tracker, mirror])
 
   // Close by itself shortly after a clean lock.
   useEffect(() => {
-    if (cal.phase !== 'done' || cal.warning) return
+    if (cal.phase !== 'done') return
     const id = setTimeout(onDone, 1400)
     return () => clearTimeout(id)
-  }, [cal.phase, cal.warning, onDone])
+  }, [cal.phase, onDone])
 
   return (
     <div className="deck-cal">
@@ -100,7 +115,6 @@ export function DeckCalibration({ tracker, hasSavedDeck, onDone, onUseSaved, onS
         {cal.phase === 'done' ? (
           <>
             <strong>✓ Deck locked{cal.hand ? ` in your ${cal.hand.toLowerCase()} hand` : ''}</strong>
-            {cal.warning && <span className="small">{cal.warning}</span>}
             <button className="primary" onClick={onDone}>
               Start
             </button>
