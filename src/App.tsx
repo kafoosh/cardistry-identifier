@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Library } from './components/Library'
+import { RecordSetup } from './components/RecordSetup'
+import { loadRecordSetup, saveRecordSetup, type RecordSetupValue } from './recording/recordSetup'
 import { SaveSheet, type SaveDetails } from './components/SaveSheet'
 import { IdentifyPanel } from './components/IdentifyPanel'
 import { SharedLibrary } from './components/SharedLibrary'
@@ -7,7 +9,7 @@ import { Identifier, type IdentifyState } from './recognition/identifier'
 import { getMatcher } from './recognition/shared'
 import { loadLocalTemplates } from './recognition/templates'
 import { canRecordVideo, describeDevice, longestGapMs, MAX_RECORDING_MS, qualityScore, Recorder, type Capture } from './recording/recorder'
-import { listRecordings, requestPersistentStorage, saveRecording } from './storage/db'
+import { requestPersistentStorage, saveRecording } from './storage/db'
 import { describeCameraError, hasMultipleCameras, openCamera, stopStream } from './tracking/camera'
 import { SLOT_COLOURS } from './tracking/draw'
 import { loadHandTracker, type LoadedTracker } from './tracking/handTracker'
@@ -52,7 +54,11 @@ export default function App() {
   const [countdown, setCountdown] = useState(COUNTDOWN_S)
   const [elapsed, setElapsed] = useState(0)
   const [capture, setCapture] = useState<Capture | null>(null)
-  const [knownMoves, setKnownMoves] = useState<string[]>([])
+  const [setup, setSetupState] = useState<RecordSetupValue>(loadRecordSetup)
+  const setSetup = (v: RecordSetupValue) => {
+    setSetupState(v)
+    saveRecordSetup(v)
+  }
   const [savedNote, setSavedNote] = useState('')
   const [recordVideo, setRecordVideo] = useState(() => {
     try {
@@ -146,9 +152,6 @@ export default function App() {
     if (v?.videoWidth) setVideoSize({ width: v.videoWidth, height: v.videoHeight })
     setCapture(cap)
     setRecState('review')
-    listRecordings()
-      .then((all) => setKnownMoves([...new Set(all.map((r) => r.moveName))]))
-      .catch(() => {})
   }, [])
 
   const startRecording = useCallback(() => {
@@ -185,6 +188,7 @@ export default function App() {
     if (!capture) return
     const frames = d.frames
     const id = crypto.randomUUID()
+    if (d.moveName !== setup.moveName) setSetup({ ...setup, moveName: d.moveName })
     // Close the sheet straight away and write in the background.
     setCapture(null)
     if (again) startRecording()
@@ -200,8 +204,8 @@ export default function App() {
         frameCount: frames.length,
         durationMs: capture.durationMs,
         camera: facing,
-        cameraView: d.cameraView,
-        dominantHand: d.dominantHand,
+        cameraView: setup.cameraView,
+        dominantHand: setup.dominantHand,
         device: describeDevice(),
         videoWidth: videoSize.width,
         videoHeight: videoSize.height,
@@ -388,6 +392,7 @@ export default function App() {
               onRecord={() => setMode('record')}
             />
           )}
+          {mode === 'record' && <RecordSetup value={setup} onChange={setSetup} disabled={recState !== 'ready'} />}
           <div className="record-row" hidden={mode !== 'record'}>
             {recState === 'recording' ? (
               <button className="record is-recording" onClick={() => void finishRecording()}>
@@ -398,8 +403,13 @@ export default function App() {
                 Cancel
               </button>
             ) : (
-              <button className="record" onClick={startRecording} disabled={recState === 'review'}>
-                <span className="rec-dot" /> Record a move
+              <button
+                className="record"
+                onClick={startRecording}
+                disabled={recState === 'review' || !setup.moveName}
+                title={setup.moveName ? undefined : 'Choose the move first'}
+              >
+                <span className="rec-dot" /> {setup.moveName ? `Record ${setup.moveName}` : 'Choose a move to record'}
               </button>
             )}
             {canRecordVideo() && (
@@ -471,7 +481,7 @@ export default function App() {
           width={videoSize.width}
           height={videoSize.height}
           mirror={mirror}
-          knownMoves={knownMoves}
+          moveName={setup.moveName}
           onSave={save}
           onDiscard={() => {
             setCapture(null)

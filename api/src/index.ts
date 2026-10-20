@@ -251,10 +251,7 @@ async function resolveMove(env: Env, rawName: string, deviceId: string): Promise
   return { id, name, slug, aliases: '[]', category: null, description: null, credited_to: null, status: 'proposed', merged_into: null }
 }
 
-interface UploadBody {
-  turnstileToken?: string
-  deviceId?: string
-  nickname?: string
+interface UploadItem {
   moveName?: string
   meta?: {
     cameraView?: string
@@ -267,26 +264,59 @@ interface UploadBody {
   sequence?: WireSequence
 }
 
-async function uploadRecording(req: Request, env: Env) {
+interface UploadBody extends UploadItem {
+  turnstileToken?: string
+  deviceId?: string
+  nickname?: string
+}
+
+interface BatchBody {
+  turnstileToken?: string
+  deviceId?: string
+  nickname?: string
+  items?: UploadItem[]
+}
+
+const MAX_BATCH = 20
+
+async function readJson<T>(req: Request, maxBytes: number): Promise<T> {
   const length = Number(req.headers.get('Content-Length') ?? 0)
-  if (length > MAX_BODY_BYTES) throw new HttpError(413, 'Recording is too large')
+  if (length > maxBytes) throw new HttpError(413, 'Upload is too large')
   const text = await req.text()
-  if (text.length > MAX_BODY_BYTES) throw new HttpError(413, 'Recording is too large')
-  let body: UploadBody
+  if (text.length > maxBytes) throw new HttpError(413, 'Upload is too large')
   try {
-    body = JSON.parse(text)
+    return JSON.parse(text) as T
   } catch {
     throw new HttpError(400, 'Invalid JSON')
   }
+}
 
-  const ip = req.headers.get('CF-Connecting-IP')
-  await verifyTurnstile(env, body.turnstileToken, ip)
-  if (!isUuid(body.deviceId)) throw new HttpError(400, 'Missing device id')
-  const deviceId = body.deviceId.toLowerCase()
+type StoreResult =
+  | { id: string; deleteKey: string; status: string; duplicate: false; move: { id: string; name: string; slug: string; status: string } }
+  | { id: string; status: string; duplicate: true; move: { id: string; name: string; slug: string; status: string } }
 
-  const err = validateSequence(body.sequence)
+/** Validates and stores one recording. Identical landmark data already in the library is not stored twice. */
+async function storeRecording(env: Env, item: UploadItem, deviceId: string, nickname: string, ip: string | null): Promise<StoreResult> {
+  const err = validateSequence(item.sequence)
   if (err) throw new HttpError(422, `Recording rejected: ${err}`)
-  const seq = body.sequence as WireSequence
+  const seq = item.sequence as WireSequence
+  const seqJson = JSON.stringify(seq)
+  const contentHash = await sha256Hex(seqJson)
+
+  const existing = await env.DB.prepare(
+    `SELECT r.id, r.status, m.id AS move_id, m.name, m.slug, m.status AS move_status
+     FROM recordings r JOIN moves m ON m.id = r.move_id WHERE r.content_hash = ?1`,
+  )
+    .bind(contentHash)
+    .first<{ id: string; status: string; move_id: string; name: string; slug: string; move_status: string }>()
+  if (existing) {
+    return {
+      id: existing.id,
+      status: existing.status,
+      duplicate: true,
+      move: { id: existing.move_id, name: existing.name, slug: existing.slug, status: existing.move_status },
+    }
+  }
 
   const limit = Number(env.DAILY_UPLOAD_LIMIT) || 40
   await rateLimit(env, [`up:dev:${deviceId}`, ...(ip ? [`up:ip:${await sha256Hex(ip)}`] : [])], limit)
@@ -320,17 +350,17 @@ async function uploadRecording(req: Request, env: Env) {
   const interval = frames.length > 1 ? durationMs / (frames.length - 1) : 0
   if (longestGap <= interval * 1.5) longestGap = 0
 
-  const meta = body.meta ?? {}
+  const meta = item.meta ?? {}
   const cameraView = CAMERA_VIEWS.has(meta.cameraView ?? '') ? meta.cameraView! : null
   const handedness = HANDEDNESS.has(meta.handedness ?? '') ? meta.handedness! : null
   const camera = CAMERAS.has(meta.camera ?? '') ? meta.camera! : null
   const width = Number.isInteger(meta.width) && meta.width! > 0 && meta.width! <= 8192 ? meta.width! : null
   const height = Number.isInteger(meta.height) && meta.height! > 0 && meta.height! <= 8192 ? meta.height! : null
 
-  const move = await resolveMove(env, body.moveName ?? '', deviceId)
+  const move = await resolveMove(env, item.moveName ?? '', deviceId)
   const id = crypto.randomUUID()
   const deleteKey = randomKey()
-  const gz = await gzip(JSON.stringify(seq))
+  const gz = await gzip(seqJson)
   // Low-quality recordings are kept but held back until reviewed.
   const status = quality >= 0.6 ? 'approved' : 'pending'
   const now = Date.now()
@@ -338,14 +368,15 @@ async function uploadRecording(req: Request, env: Env) {
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO recordings (id, move_id, device_id, delete_hash, nickname, fps, frame_count, duration_ms,
-         handedness, camera_view, camera, device, width, height, quality_score, longest_gap_ms, data_bytes, status, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)`,
+         handedness, camera_view, camera, device, width, height, quality_score, longest_gap_ms, data_bytes, status, created_at,
+         content_hash)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)`,
     ).bind(
       id,
       move.id,
       deviceId,
       await sha256Hex(deleteKey),
-      cleanText(body.nickname, 30) || null,
+      nickname || null,
       Math.round(fps * 10) / 10,
       frames.length,
       durationMs,
@@ -360,11 +391,46 @@ async function uploadRecording(req: Request, env: Env) {
       gz.byteLength,
       status,
       now,
+      contentHash,
     ),
     env.DB.prepare(`INSERT INTO recording_data (recording_id, gz) VALUES (?1, ?2)`).bind(id, gz),
   ])
 
-  return json({ id, deleteKey, status, move: { id: move.id, name: move.name, slug: move.slug, status: move.status } }, 201)
+  return { id, deleteKey, status, duplicate: false, move: { id: move.id, name: move.name, slug: move.slug, status: move.status } }
+}
+
+async function uploadRecording(req: Request, env: Env) {
+  const body = await readJson<UploadBody>(req, MAX_BODY_BYTES)
+  const ip = req.headers.get('CF-Connecting-IP')
+  await verifyTurnstile(env, body.turnstileToken, ip)
+  if (!isUuid(body.deviceId)) throw new HttpError(400, 'Missing device id')
+  const result = await storeRecording(env, body, body.deviceId.toLowerCase(), cleanText(body.nickname, 30), ip)
+  return json(result, result.duplicate ? 200 : 201)
+}
+
+/** Shares up to 20 recordings behind one captcha check; each item succeeds or fails on its own. */
+async function uploadBatch(req: Request, env: Env) {
+  const body = await readJson<BatchBody>(req, MAX_BODY_BYTES * MAX_BATCH)
+  const ip = req.headers.get('CF-Connecting-IP')
+  await verifyTurnstile(env, body.turnstileToken, ip)
+  if (!isUuid(body.deviceId)) throw new HttpError(400, 'Missing device id')
+  const items = Array.isArray(body.items) ? body.items : []
+  if (!items.length) throw new HttpError(400, 'Nothing to upload')
+  if (items.length > MAX_BATCH) throw new HttpError(400, `At most ${MAX_BATCH} recordings at a time`)
+  const deviceId = body.deviceId.toLowerCase()
+  const nickname = cleanText(body.nickname, 30)
+  const results = []
+  for (const item of items) {
+    try {
+      results.push({ ok: true, ...(await storeRecording(env, item, deviceId, nickname, ip)) })
+    } catch (err) {
+      if (!(err instanceof HttpError)) throw err
+      results.push({ ok: false, error: err.message })
+      // Stop once the daily limit is hit; the rest would fail the same way.
+      if (err.status === 429) break
+    }
+  }
+  return json({ results })
 }
 
 async function deleteRecording(req: Request, env: Env, id: string) {
@@ -395,6 +461,7 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (req.method === 'GET' && (m = path.match(/^\/api\/moves\/([a-z0-9-]{1,60})$/))) return getMove(env, m[1], deviceId)
   if (req.method === 'GET' && (m = path.match(/^\/api\/recordings\/([0-9a-f-]{36})\/data$/))) return getRecordingData(env, m[1])
   if (req.method === 'POST' && path === '/api/recordings') return uploadRecording(req, env)
+  if (req.method === 'POST' && path === '/api/recordings/batch') return uploadBatch(req, env)
   if (req.method === 'DELETE' && (m = path.match(/^\/api\/recordings\/([0-9a-f-]{36})$/))) return deleteRecording(req, env, m[1])
   throw new HttpError(404, 'Not found')
 }

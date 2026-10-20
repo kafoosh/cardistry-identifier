@@ -95,10 +95,11 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export const fetchMoves = () => call<{ moves: SharedMove[] }>('/api/moves').then((r) => r.moves)
+// Always revalidate: counts change as soon as anyone shares.
+export const fetchMoves = () => call<{ moves: SharedMove[] }>('/api/moves', { cache: 'no-cache' }).then((r) => r.moves)
 
 export const fetchMove = (slug: string) =>
-  call<{ move: SharedMove; recordings: SharedRecording[] }>(`/api/moves/${encodeURIComponent(slug)}`)
+  call<{ move: SharedMove; recordings: SharedRecording[] }>(`/api/moves/${encodeURIComponent(slug)}`, { cache: 'no-cache' })
 
 const frameCache = new Map<string, Promise<Frame[]>>()
 
@@ -121,33 +122,63 @@ export function fetchRecordingFrames(id: string): Promise<Frame[]> {
 export interface UploadResult {
   id: string
   status: 'approved' | 'pending'
+  /** True when identical landmark data was already in the library, so nothing new was stored. */
+  duplicate: boolean
   move: { id: string; name: string; slug: string; status: string }
 }
 
+export type BatchItemResult = ({ ok: true } & UploadResult) | { ok: false; error: string }
+
+function uploadItem(rec: LocalRecording) {
+  return {
+    moveName: rec.moveName,
+    meta: {
+      cameraView: rec.cameraView,
+      handedness: rec.dominantHand === 'left' ? 'left-dominant' : 'right-dominant',
+      camera: rec.camera,
+      device: rec.device,
+      width: rec.videoWidth,
+      height: rec.videoHeight,
+    },
+    sequence: encodeSequence(rec.frames),
+  }
+}
+
+/** Only the uploader's browser keeps delete keys; the server stores their hashes. */
+function rememberDeleteKeys(pairs: [string, string][]) {
+  if (pairs.length) storageSet('cardistry.deleteKeys', JSON.stringify({ ...deleteKeys(), ...Object.fromEntries(pairs) }))
+}
+
+type Uploaded = UploadResult & { deleteKey?: string }
+
+const stripKey = ({ deleteKey: _key, ...rest }: Uploaded): UploadResult => rest
+
 export async function uploadRecording(rec: LocalRecording, nickname: string, turnstileToken: string): Promise<UploadResult> {
-  const out = await call<UploadResult & { deleteKey: string }>('/api/recordings', {
+  const out = await call<Uploaded>('/api/recordings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      turnstileToken,
-      deviceId: deviceId(),
-      nickname: nickname || undefined,
-      moveName: rec.moveName,
-      meta: {
-        cameraView: rec.cameraView,
-        handedness: rec.dominantHand === 'left' ? 'left-dominant' : 'right-dominant',
-        camera: rec.camera,
-        device: rec.device,
-        width: rec.videoWidth,
-        height: rec.videoHeight,
-      },
-      sequence: encodeSequence(rec.frames),
-    }),
+    body: JSON.stringify({ turnstileToken, deviceId: deviceId(), nickname: nickname || undefined, ...uploadItem(rec) }),
   })
-  // Only the uploader's browser keeps the delete key; the server stores its hash.
-  storageSet('cardistry.deleteKeys', JSON.stringify({ ...deleteKeys(), [out.id]: out.deleteKey }))
-  const { deleteKey: _key, ...result } = out
-  return result
+  if (out.deleteKey) rememberDeleteKeys([[out.id, out.deleteKey]])
+  return stripKey(out)
+}
+
+export const MAX_BATCH = 20
+
+/** Shares up to MAX_BATCH recordings behind one captcha token. Results line up with the input. */
+export async function uploadBatch(recs: LocalRecording[], nickname: string, turnstileToken: string): Promise<BatchItemResult[]> {
+  const out = await call<{ results: (({ ok: true } & Uploaded) | { ok: false; error: string })[] }>('/api/recordings/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ turnstileToken, deviceId: deviceId(), nickname: nickname || undefined, items: recs.map(uploadItem) }),
+  })
+  rememberDeleteKeys(out.results.flatMap((r) => (r.ok && r.deleteKey ? [[r.id, r.deleteKey] as [string, string]] : [])))
+  // The server stops early when the daily limit is hit; mark the rest as not sent.
+  return recs.map((_, i) => {
+    const r = out.results[i]
+    if (!r) return { ok: false, error: 'Not sent (daily limit reached)' }
+    return r.ok ? { ok: true, ...stripKey(r) } : r
+  })
 }
 
 export async function deleteSharedRecording(id: string) {

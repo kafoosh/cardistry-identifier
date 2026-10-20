@@ -6,7 +6,8 @@ import { loadLocalTemplates } from '../recognition/templates'
 import type { LocalRecording, RecordingSummary } from '../recording/types'
 import { deleteRecording, listRecordings, loadRecording, loadVideo, markShared, renameRecording } from '../storage/db'
 import { ReplayCanvas } from './ReplayCanvas'
-import { ShareSheet } from './ShareSheet'
+import { MovePicker } from './MovePicker'
+import { ShareSheet, type ShareOutcome } from './ShareSheet'
 
 function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
@@ -63,7 +64,8 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
   const [open, setOpen] = useState<LocalRecording | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [error, setError] = useState('')
-  const [sharing, setSharing] = useState<LocalRecording | null>(null)
+  const [sharing, setSharing] = useState<LocalRecording[] | null>(null)
+  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null)
   const [note, setNote] = useState('')
   const [test, setTest] = useState<SelfTestResult | 'running' | null>(null)
 
@@ -129,15 +131,51 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
     await refresh()
   }
 
-  const rename = async (r: RecordingSummary) => {
-    const name = prompt('Move name', r.moveName)?.trim()
-    if (!name || name === r.moveName) return
-    await renameRecording(r.id, name)
+  const saveRename = async () => {
+    if (!renaming) return
+    const name = renaming.name.trim()
+    setRenaming(null)
+    if (!name) return
+    await renameRecording(renaming.id, name)
+    await refresh()
+  }
+
+  const shareAll = async () => {
+    const unshared = (items ?? []).filter((r) => !r.sharedId)
+    const recs = await Promise.all(unshared.map((r) => loadRecording(r.id)))
+    setSharing(recs.filter((r): r is LocalRecording => r !== null))
+  }
+
+  const finishSharing = async (outcomes: ShareOutcome[]) => {
+    let added = 0
+    let already = 0
+    let held = 0
+    const failures: string[] = []
+    for (const { recording, result } of outcomes) {
+      if (!result.ok) {
+        failures.push(result.error)
+        continue
+      }
+      await markShared(recording.id, result.id)
+      if (result.duplicate) already++
+      else {
+        added++
+        if (result.status === 'pending') held++
+      }
+    }
+    setSharing(null)
+    const parts = []
+    if (added) parts.push(`Shared ${added} recording${added === 1 ? '' : 's'}. Thanks!`)
+    if (already) parts.push(`${already} ${already === 1 ? 'was' : 'were'} already in the library.`)
+    if (held) parts.push(`${held} had patchy tracking and ${held === 1 ? 'is' : 'are'} held for review.`)
+    if (failures.length) parts.push(`${failures.length} failed: ${[...new Set(failures)].join('; ')}`)
+    setNote(parts.join(' '))
     await refresh()
   }
 
   if (error) return <p className="error">{error}</p>
   const shareable = sharingEnabled()
+  const unsharedCount = (items ?? []).filter((r) => !r.sharedId).length
   if (!items) return <p className="muted">Loading…</p>
 
   if (!items.length) {
@@ -165,6 +203,11 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
           <button onClick={runSelfTest} disabled={test === 'running'}>
             {test === 'running' ? 'Testing…' : 'Test recognition'}
           </button>
+          {shareable && unsharedCount > 0 && (
+            <button className="primary" onClick={shareAll}>
+              Share all to library ({unsharedCount})
+            </button>
+          )}
           <button onClick={exportAll}>Export all (JSON)</button>
         </div>
       </div>
@@ -204,13 +247,22 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
                     ) : (
                       <p className="muted small">Loading…</p>
                     )}
+                    {renaming?.id === r.id && (
+                      <div className="rename">
+                        <MovePicker value={renaming.name} onChange={(name) => setRenaming({ id: r.id, name })} autoFocus />
+                        <button className="primary" onClick={saveRename} disabled={!renaming.name.trim()}>
+                          Save
+                        </button>
+                        <button onClick={() => setRenaming(null)}>Cancel</button>
+                      </div>
+                    )}
                     <div className="controls">
                       {shareable && open && !r.sharedId && (
-                        <button className="primary" onClick={() => setSharing(open)}>
+                        <button className="primary" onClick={() => setSharing([open])}>
                           Share to library
                         </button>
                       )}
-                      <button onClick={() => rename(r)}>Rename</button>
+                      <button onClick={() => setRenaming({ id: r.id, name: r.moveName })}>Change move</button>
                       {open && (
                         <button
                           onClick={() =>
@@ -245,21 +297,8 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
         </section>
       ))}
 
-      {sharing && (
-        <ShareSheet
-          recording={sharing}
-          onClose={() => setSharing(null)}
-          onDone={async (res) => {
-            await markShared(sharing.id, res.id)
-            setSharing(null)
-            setNote(
-              res.status === 'approved'
-                ? `Shared to ${res.move.name}. Thanks!`
-                : `Shared to ${res.move.name}. Tracking was patchy, so it's held for review before it's used for recognition.`,
-            )
-            await refresh()
-          }}
-        />
+      {sharing && sharing.length > 0 && (
+        <ShareSheet recordings={sharing} onClose={() => setSharing(null)} onDone={finishSharing} />
       )}
     </div>
   )
