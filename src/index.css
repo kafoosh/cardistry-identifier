@@ -946,16 +946,6 @@ button.link {
   cursor: ew-resize;
 }
 
-.trim-mark {
-  position: absolute;
-  top: 4px;
-  bottom: 4px;
-  width: 2px;
-  margin-left: -1px;
-  background: var(--text, #fff);
-  opacity: 0.8;
-  pointer-events: none;
-}
 
 .guess-hands {
   display: flex;
@@ -1259,16 +1249,6 @@ button.round {
   }
 }
 
-.repeat-length {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 2px 0 6px 28px;
-}
-
-.repeat-length button:disabled {
-  opacity: 0.4;
-}
 
 /* Identify */
 .identify-status {

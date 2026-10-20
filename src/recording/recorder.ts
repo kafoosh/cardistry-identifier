@@ -1,8 +1,7 @@
 import type { TrackingLoop } from '../tracking/trackingLoop'
 import type { Frame } from '../tracking/types'
 
-/** Long enough to repeat a move several times in one take. */
-export const MAX_RECORDING_MS = 30_000
+export const MAX_RECORDING_MS = 10_000
 /** How long to wait for the video clip to finalise before giving up on it. */
 const STOP_TIMEOUT_MS = 1500
 

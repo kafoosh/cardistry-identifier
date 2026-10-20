@@ -56,7 +56,7 @@ function remember(key: string, on: boolean) {
 const AUTO_STOP_STILL_MS = 1200
 const AUTO_STOP_MIN_MS = 1000
 /** While armed and waiting, restart the background recording this long before it would hit the limit. */
-const ARMED_RESTART_MARGIN_MS = 8000
+const ARMED_RESTART_MARGIN_MS = 3000
 
 type RecState = 'ready' | 'countdown' | 'armed' | 'recording' | 'review'
 type Mode = 'record' | 'identify'
@@ -331,47 +331,35 @@ export default function App() {
     setCapture(null)
     if (again) startRecording()
     else setRecState('ready')
-    const takes = d.repeats ?? [
-      {
-        frames: d.frames,
-        durationMs: d.durationMs,
-        videoStartMs: d.videoStartMs,
-      },
-    ]
-    const label = takes.length > 1 ? `${takes.length} takes of ${d.moveName}` : d.moveName
-    setSavedNote(`Saving ${label}…`)
-    const createdAt = Date.now()
+    setSavedNote(`Saving ${d.moveName}…`)
+    const { frames } = d
+    const video = d.keepVideo ? capture.video : null
     void (async () => {
       try {
-        for (const [i, take] of takes.entries()) {
-          const { frames } = take
-          // One copy of the clip is enough; repeats from the same take share it.
-          const video = d.keepVideo && i === 0 ? capture.video : null
-          await saveRecording(
-            {
-              id: crypto.randomUUID(),
-              moveName: d.moveName,
-              createdAt: createdAt + i,
-              frames,
-              fps: take.durationMs > 0 ? ((frames.length - 1) * 1000) / take.durationMs : 0,
-              frameCount: frames.length,
-              durationMs: take.durationMs,
-              camera: facing,
-              cameraView: setup.cameraView,
-              dominantHand: setup.dominantHand,
-              device: describeDevice(),
-              videoWidth: videoSize.width,
-              videoHeight: videoSize.height,
-              qualityScore: qualityScore(frames),
-              longestGapMs: longestGapMs(frames),
-              hasVideo: Boolean(video),
-              videoStartMs: take.videoStartMs,
-              videoMimeType: video?.type,
-            },
-            video,
-          )
-        }
-        setSavedNote(`Saved ${label}.`)
+        await saveRecording(
+          {
+            id: crypto.randomUUID(),
+            moveName: d.moveName,
+            createdAt: Date.now(),
+            frames,
+            fps: d.durationMs > 0 ? ((frames.length - 1) * 1000) / d.durationMs : 0,
+            frameCount: frames.length,
+            durationMs: d.durationMs,
+            camera: facing,
+            cameraView: setup.cameraView,
+            dominantHand: setup.dominantHand,
+            device: describeDevice(),
+            videoWidth: videoSize.width,
+            videoHeight: videoSize.height,
+            qualityScore: qualityScore(frames),
+            longestGapMs: longestGapMs(frames),
+            hasVideo: Boolean(video),
+            videoStartMs: d.videoStartMs,
+            videoMimeType: video?.type,
+          },
+          video,
+        )
+        setSavedNote(`Saved ${d.moveName}.`)
         void requestPersistentStorage()
       } catch (err) {
         setSavedNote(`Couldn't save: ${err instanceof Error ? err.message : err}`)
