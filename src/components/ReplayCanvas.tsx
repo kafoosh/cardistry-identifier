@@ -9,6 +9,8 @@ interface Props {
   mirror: boolean
   /** Optional clip recorded alongside; the wireframe is drawn over it in sync. */
   videoUrl?: string | null
+  /** Frame time (ms) at which the video's time 0 falls. */
+  videoStartMs?: number
 }
 
 const SPEEDS = [0.25, 0.5, 1] as const
@@ -26,7 +28,7 @@ function frameAt(frames: Frame[], time: number): number {
 }
 
 /** Replays a recording's wireframe, looping, with play/pause, scrubbing and slow motion. */
-export function ReplayCanvas({ frames, width, height, mirror, videoUrl }: Props) {
+export function ReplayCanvas({ frames, width, height, mirror, videoUrl, videoStartMs = 0 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [playing, setPlaying] = useState(true)
@@ -55,7 +57,7 @@ export function ReplayCanvas({ frames, width, height, mirror, videoUrl }: Props)
     let last = performance.now()
     const step = (now: number) => {
       if (video && videoUrl) {
-        timeRef.current = video.currentTime * 1000
+        timeRef.current = video.currentTime * 1000 + videoStartMs
       } else {
         timeRef.current += (now - last) * speed
         if (timeRef.current > duration) timeRef.current = 0
@@ -66,12 +68,12 @@ export function ReplayCanvas({ frames, width, height, mirror, videoUrl }: Props)
     }
     raf = requestAnimationFrame(step)
     return () => cancelAnimationFrame(raf)
-  }, [playing, speed, duration, videoUrl])
+  }, [playing, speed, duration, videoUrl, videoStartMs])
 
   const seek = (ms: number) => {
     timeRef.current = ms
     setTime(ms)
-    if (videoRef.current) videoRef.current.currentTime = ms / 1000
+    if (videoRef.current) videoRef.current.currentTime = Math.max(0, (ms - videoStartMs) / 1000)
   }
 
   return (

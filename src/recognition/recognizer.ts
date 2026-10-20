@@ -115,3 +115,37 @@ export function selfTest(templates: Template[]): SelfTestResult {
     threshold,
   }
 }
+
+/** A move's take that is this many times further from its siblings than is typical gets left out. */
+const OUTLIER_RATIO = 1.6
+const MIN_TAKES_FOR_OUTLIERS = 4
+
+/**
+ * Finds takes that don't look like the other takes of the same move (a
+ * fumble, the wrong move, hands out of frame). For each take: its median
+ * DTW distance to the move's other takes. A take whose median is far above
+ * the move's typical median is an outlier. Needs a few takes per move.
+ */
+export function findOutliers(templates: Template[]): Set<string> {
+  const byMove = new Map<string, Template[]>()
+  for (const t of templates) byMove.set(t.moveName, [...(byMove.get(t.moveName) ?? []), t])
+  const out = new Set<string>()
+  const median = (xs: number[]) => {
+    const a = [...xs].sort((x, y) => x - y)
+    const m = a.length >> 1
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2
+  }
+  for (const takes of byMove.values()) {
+    if (takes.length < MIN_TAKES_FOR_OUTLIERS) continue
+    const d = takes.map(() => new Array<number>(takes.length).fill(0))
+    for (let i = 0; i < takes.length; i++) {
+      for (let j = i + 1; j < takes.length; j++) d[i][j] = d[j][i] = dtw(takes[i].features, takes[j].features)
+    }
+    const medians = takes.map((_, i) => median(d[i].filter((_, j) => j !== i)))
+    const typical = median(medians)
+    takes.forEach((t, i) => {
+      if (medians[i] > typical * OUTLIER_RATIO) out.add(t.id)
+    })
+  }
+  return out
+}

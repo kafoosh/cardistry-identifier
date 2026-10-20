@@ -834,3 +834,40 @@ button.link {
   padding: 10px;
   min-height: 44px;
 }
+
+.motion-meter {
+  display: grid;
+  grid-template-columns: auto 1fr 52px;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 10px;
+}
+
+.motion-meter .bar {
+  position: relative;
+  overflow: visible;
+}
+
+.motion-meter .bar span {
+  background: var(--muted);
+  border-radius: 4px;
+  transition: width 0.12s;
+}
+
+.motion-meter .bar.active span {
+  background: var(--accent);
+}
+
+.motion-meter .bar i {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: var(--text);
+  opacity: 0.6;
+}
+
+.pill.warn {
+  color: var(--warn);
+  border-color: var(--warn);
+}

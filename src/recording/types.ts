@@ -36,6 +36,8 @@ export interface LocalRecording {
   /** Whether a video clip is stored alongside (in the `videos` store). */
   hasVideo: boolean
   videoMimeType?: string
+  /** Frame time (ms) at which the video clip starts. */
+  videoStartMs?: number
   /** Id in the shared library once uploaded. */
   sharedId?: string
 }

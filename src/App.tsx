@@ -6,6 +6,8 @@ import { SaveSheet, type SaveDetails } from './components/SaveSheet'
 import { IdentifyPanel } from './components/IdentifyPanel'
 import { SharedLibrary } from './components/SharedLibrary'
 import { Identifier, type IdentifyState } from './recognition/identifier'
+import { MOTION_ON, trimIdle } from './recognition/motion'
+import { MotionWatcher } from './recognition/motionWatcher'
 import { getMatcher } from './recognition/shared'
 import { loadLocalTemplates } from './recognition/templates'
 import { canRecordVideo, describeDevice, longestGapMs, MAX_RECORDING_MS, qualityScore, Recorder, type Capture } from './recording/recorder'
@@ -19,7 +21,7 @@ import type { CameraFacing, Handedness } from './tracking/types'
 
 type Phase = 'idle' | 'loading' | 'live' | 'error'
 type Tab = 'live' | 'library' | 'shared'
-type RecState = 'ready' | 'countdown' | 'recording' | 'review'
+type RecState = 'ready' | 'countdown' | 'armed' | 'recording' | 'review'
 type Mode = 'record' | 'identify'
 
 const COUNTDOWN_S = 3
@@ -48,6 +50,7 @@ export default function App() {
   const streamRef = useRef<MediaStream | null>(null)
   const loopRef = useRef<TrackingLoop | null>(null)
   const recorderRef = useRef<Recorder | null>(null)
+  const watcherRef = useRef<MotionWatcher | null>(null)
 
   const [tab, setTab] = useState<Tab>('live')
   const [recState, setRecState] = useState<RecState>('ready')
@@ -67,6 +70,14 @@ export default function App() {
       return false
     }
   })
+  const [autoStart, setAutoStart] = useState(() => {
+    try {
+      return localStorage.getItem('cardistry.autoStart') !== '0'
+    } catch {
+      return true
+    }
+  })
+  const [motion, setMotion] = useState({ energy: 0, active: false })
   const [mode, setMode] = useState<Mode>('record')
   const [identify, setIdentify] = useState<IdentifyState | null>(null)
   const [templateInfo, setTemplateInfo] = useState({ templates: 0, moves: 0 })
@@ -92,6 +103,8 @@ export default function App() {
     recorderRef.current = null
     setRecState('ready')
     setCapture(null)
+    watcherRef.current?.stop()
+    watcherRef.current = null
     loopRef.current?.stop()
     loopRef.current = null
     stopStream(streamRef.current)
@@ -122,6 +135,7 @@ export default function App() {
         })
         loop.start()
         loopRef.current = loop
+        watcherRef.current = new MotionWatcher(loop)
         setPhase('live')
         setCanSwitch(await hasMultipleCameras())
       } catch (err) {
@@ -143,16 +157,47 @@ export default function App() {
 
   useEffect(() => stop, [stop])
 
+  useEffect(() => {
+    if (phase !== 'live') return
+    const id = setInterval(() => {
+      const m = watcherRef.current?.latest
+      if (m) setMotion({ energy: m.energy, active: m.active })
+    }, 150)
+    return () => clearInterval(id)
+  }, [phase])
+
   const finishRecording = useCallback(async () => {
     const rec = recorderRef.current
     if (!rec) return
     recorderRef.current = null
-    const cap = await rec.stop()
+    const raw = await rec.stop()
+    // Cut idle time before the move starts and after it ends.
+    const trimmed = trimIdle(raw.frames)
+    const cap: Capture = {
+      ...raw,
+      frames: trimmed.frames,
+      durationMs: trimmed.frames.length ? trimmed.frames[trimmed.frames.length - 1].t : 0,
+      videoStartMs: raw.videoStartMs - trimmed.cutStartMs,
+    }
     const v = videoRef.current
     if (v?.videoWidth) setVideoSize({ width: v.videoWidth, height: v.videoHeight })
     setCapture(cap)
     setRecState('review')
   }, [])
+
+  const beginCapture = useCallback(
+    (preroll: Parameters<Recorder['start']>[1]) => {
+      const loop = loopRef.current
+      const stream = streamRef.current
+      if (!loop || !stream || recorderRef.current) return
+      const rec = new Recorder(loop, stream, () => void finishRecording())
+      rec.start(recordVideo && canRecordVideo(), preroll)
+      recorderRef.current = rec
+      setElapsed(0)
+      setRecState('recording')
+    },
+    [finishRecording, recordVideo],
+  )
 
   const startRecording = useCallback(() => {
     setSavedNote('')
@@ -160,23 +205,34 @@ export default function App() {
     setCountdown(COUNTDOWN_S)
   }, [])
 
-  // Countdown, then start capturing.
+  // Countdown, then either wait for motion (auto) or start capturing.
   useEffect(() => {
     if (recState !== 'countdown') return
-    if (countdown === 0) {
-      const loop = loopRef.current
-      const stream = streamRef.current
-      if (!loop || !stream) return setRecState('ready')
-      const rec = new Recorder(loop, stream, () => void finishRecording())
-      rec.start(recordVideo && canRecordVideo())
-      recorderRef.current = rec
-      setElapsed(0)
-      setRecState('recording')
-      return
-    }
-    const id = setTimeout(() => setCountdown((c) => c - 1), 1000)
+    const id = setTimeout(() => {
+      if (countdown > 1) setCountdown((c) => c - 1)
+      else if (autoStart) setRecState('armed')
+      else beginCapture([])
+    }, 1000)
     return () => clearTimeout(id)
-  }, [recState, countdown, finishRecording, recordVideo])
+  }, [recState, countdown, autoStart, beginCapture])
+
+  // Auto-start: wait for intentional finger motion, then record from just before it.
+  useEffect(() => {
+    const watcher = watcherRef.current
+    if (recState !== 'armed' || !watcher) return
+    return watcher.onSample((s) => {
+      if (s.active) beginCapture(watcher.recent(700))
+    })
+  }, [recState, beginCapture])
+
+  // Auto-stop: once the hands go idle after the move.
+  useEffect(() => {
+    const watcher = watcherRef.current
+    if (recState !== 'recording' || !autoStart || !watcher) return
+    return watcher.onSample((s) => {
+      if (!s.active) void finishRecording()
+    })
+  }, [recState, autoStart, finishRecording])
 
   useEffect(() => {
     if (recState !== 'recording') return
@@ -212,6 +268,7 @@ export default function App() {
         qualityScore: qualityScore(frames),
         longestGapMs: longestGapMs(frames),
         hasVideo: Boolean(d.keepVideo && capture.video),
+        videoStartMs: capture.videoStartMs,
         videoMimeType: capture.video?.type,
       },
       d.keepVideo ? capture.video : null,
@@ -233,12 +290,15 @@ export default function App() {
       const templates = await loadLocalTemplates()
       if (cancelled || !loopRef.current) return
       const matcher = getMatcher()
-      matcher.setTemplates(templates)
-      setTemplateInfo({ templates: templates.length, moves: new Set(templates.map((t) => t.moveName)).size })
+      const outliers = new Set(await matcher.setTemplates(templates))
+      const used = templates.filter((t) => !outliers.has(t.id))
+      setTemplateInfo({ templates: used.length, moves: new Set(used.map((t) => t.moveName)).size })
       thresholdRef.current.base = (await matcher.selfTest()).threshold
       if (cancelled || !loopRef.current) return
+      if (!watcherRef.current) return
       identifier = new Identifier(
         loopRef.current,
+        watcherRef.current,
         matcher,
         templates,
         () => {
@@ -328,6 +388,9 @@ export default function App() {
           />
           <canvas ref={canvasRef} className={mirror ? 'mirror' : ''} />
           {live && recState === 'countdown' && <div className="countdown">{countdown}</div>}
+          {live && recState === 'armed' && (
+            <div className="rec-indicator">Ready. Start the move whenever you like…</div>
+          )}
           {live && recState === 'recording' && (
             <div className="rec-indicator">
               <span className="rec-dot" /> REC {(elapsed / 1000).toFixed(1)}s / {MAX_RECORDING_MS / 1000}s
@@ -398,7 +461,7 @@ export default function App() {
               <button className="record is-recording" onClick={() => void finishRecording()}>
                 Stop recording
               </button>
-            ) : recState === 'countdown' ? (
+            ) : recState === 'countdown' || recState === 'armed' ? (
               <button className="record" onClick={() => setRecState('ready')}>
                 Cancel
               </button>
@@ -412,6 +475,22 @@ export default function App() {
                 <span className="rec-dot" /> {setup.moveName ? `Record ${setup.moveName}` : 'Choose a move to record'}
               </button>
             )}
+            <label className="check small">
+              <input
+                type="checkbox"
+                checked={autoStart}
+                disabled={recState !== 'ready'}
+                onChange={(e) => {
+                  setAutoStart(e.target.checked)
+                  try {
+                    localStorage.setItem('cardistry.autoStart', e.target.checked ? '1' : '0')
+                  } catch {
+                    // Not persisted in private mode.
+                  }
+                }}
+              />
+              Start and stop automatically when I move
+            </label>
             {canRecordVideo() && (
               <label className="check small">
                 <input
@@ -431,6 +510,14 @@ export default function App() {
               </label>
             )}
             {savedNote && <span className="saved-note">{savedNote}</span>}
+          </div>
+          <div className="motion-meter" title="Finger motion. Recording and Identify start when it passes the mark.">
+            <span className="small muted">Finger motion</span>
+            <span className={`bar ${motion.active ? 'active' : ''}`}>
+              <span style={{ width: `${Math.min(100, (motion.energy / (MOTION_ON * 2.5)) * 100)}%` }} />
+              <i style={{ left: `${100 / 2.5}%` }} />
+            </span>
+            <span className="small muted">{motion.active ? 'moving' : 'idle'}</span>
           </div>
           <div className="hands">
             {[0, 1].map((slot) => (

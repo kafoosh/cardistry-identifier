@@ -26,6 +26,8 @@ Open the printed URL. Camera access needs `localhost` or HTTPS; to try it on a p
 - `src/tracking/trackingLoop.ts` runs detection on every new video frame, outside React.
 - `src/tracking/handIdentity.ts` keeps each hand in a stable slot (A/B) by position, because MediaPipe's left/right label can swap when hands overlap.
 - `src/recording/recorder.ts` captures frames from the loop (and a `MediaRecorder` clip); `src/storage/db.ts` keeps summaries, frames and videos in separate IndexedDB stores so listing stays fast.
+- `src/recognition/motion.ts` measures finger motion (wrist-relative, palm-scaled, smoothed) with on/off hysteresis. It drives auto-start/stop recording, trims idle ends off every take, and gates Identify so idle hands are never matched.
+- `findOutliers` in `recognizer.ts` flags takes far from the rest of their move; they're left out of matching and marked "unusual" in My moves.
 - `src/recognition/` holds feature extraction (`features.ts`), DTW and subsequence DTW (`dtw.ts`), ranking and the self-test (`recognizer.ts`), and the live loop (`identifier.ts`); matching runs in `matcher.worker.ts`.
 - Add `?cpu` to the URL to force the CPU delegate if the GPU path misbehaves on a device.
 - Landmarks are always stored in raw camera coordinates. The front-camera preview is mirrored with CSS only.

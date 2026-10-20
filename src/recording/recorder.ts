@@ -7,6 +7,8 @@ export interface Capture {
   frames: Frame[]
   durationMs: number
   video: Blob | null
+  /** Frame time (ms) at which the video clip's time 0 falls; above 0 when frames from before the start were included. */
+  videoStartMs: number
 }
 
 function pickVideoMime(): string | undefined {
@@ -32,6 +34,7 @@ export class Recorder {
   private chunks: Blob[] = []
   private resolveStop: ((c: Capture) => void) | null = null
   private timer = 0
+  private videoStartMs = 0
 
   private loop: TrackingLoop
   private stream: MediaStream
@@ -48,12 +51,17 @@ export class Recorder {
     return n ? this.frames[n - 1].t : 0
   }
 
-  start(withVideo: boolean) {
-    this.frames = []
-    this.t0 = null
+  /** `preroll` frames (from just before now) are kept at the start of the recording. */
+  start(withVideo: boolean, preroll: Frame[] = []) {
+    this.t0 = preroll.length ? preroll[0].t : null
+    this.frames = preroll.map((f) => ({ t: f.t - this.t0!, hands: f.hands }))
+    this.videoStartMs = -1
+    const lastPreroll = preroll.length ? preroll[preroll.length - 1].t : -Infinity
     this.unsubscribe = this.loop.onFrame((f) => {
+      if (f.t <= lastPreroll) return
       if (this.t0 === null) this.t0 = f.t
       const t = f.t - this.t0
+      if (this.videoStartMs < 0) this.videoStartMs = t
       this.frames.push({ t, hands: f.hands })
       if (t >= MAX_RECORDING_MS) this.onAutoStop()
     })
@@ -74,14 +82,15 @@ export class Recorder {
     this.unsubscribe = null
     const frames = this.frames
     const durationMs = frames.length ? frames[frames.length - 1].t : 0
+    const videoStartMs = Math.max(0, this.videoStartMs)
     const media = this.media
     this.media = null
-    if (!media || media.state === 'inactive') return Promise.resolve({ frames, durationMs, video: null })
+    if (!media || media.state === 'inactive') return Promise.resolve({ frames, durationMs, video: null, videoStartMs })
     return new Promise((resolve) => {
       this.resolveStop = resolve
       media.onstop = () => {
         const video = this.chunks.length ? new Blob(this.chunks, { type: media.mimeType }) : null
-        this.resolveStop?.({ frames, durationMs, video })
+        this.resolveStop?.({ frames, durationMs, video, videoStartMs })
         this.resolveStop = null
       }
       media.stop()

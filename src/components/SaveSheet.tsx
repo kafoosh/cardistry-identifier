@@ -71,7 +71,14 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
             </>
           )}
         </div>
-        <ReplayCanvas frames={frames} width={width} height={height} mirror={mirror} videoUrl={videoUrl} />
+        <ReplayCanvas
+          frames={frames}
+          width={width}
+          height={height}
+          mirror={mirror}
+          videoUrl={videoUrl}
+          videoStartMs={capture.videoStartMs}
+        />
         <p className="small muted">
           {(capture.durationMs / 1000).toFixed(1)}s · {frames.length} frames
           {' · '}hands tracked {(quality * 100).toFixed(0)}%

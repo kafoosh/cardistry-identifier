@@ -1,11 +1,10 @@
 import type { TrackingLoop } from '../tracking/trackingLoop'
 import type { Frame } from '../tracking/types'
-import { extractFeatures, motionEnergy } from './features'
+import { extractFeatures } from './features'
+import type { MotionWatcher } from './motionWatcher'
 import type { Matcher } from './matcher'
 import type { MoveScore, Template } from './recognizer'
 
-/** Below this (palm lengths per second) the hands count as still and nothing is matched. */
-const STILL_MOTION = 0.6
 const INTERVAL_MS = 400
 const HOLD_MS = 2500
 
@@ -35,9 +34,15 @@ export class Identifier {
   private threshold: () => number
   private onUpdate: (s: IdentifyState) => void
   private state: IdentifyState
+  private watcher: MotionWatcher
+  /** Frame time of the last frame with intentional motion. */
+  private lastActiveT = -Infinity
+  /** lastActiveT already given a final match after the hands went idle. */
+  private settledT = -Infinity
 
   constructor(
     loop: TrackingLoop,
+    watcher: MotionWatcher,
     matcher: Matcher,
     templates: Template[],
     aspect: () => number,
@@ -45,6 +50,7 @@ export class Identifier {
     onUpdate: (s: IdentifyState) => void,
   ) {
     this.matcher = matcher
+    this.watcher = watcher
     this.aspect = aspect
     this.threshold = threshold
     this.onUpdate = onUpdate
@@ -53,6 +59,7 @@ export class Identifier {
     this.state = { status: templates.length ? 'still' : 'no-templates', scores: [], last: null, showLast: false, matchMs: 0 }
     this.unsubscribe = loop.onFrame((f) => {
       this.frames.push(f)
+      if (this.watcher.latest.moving) this.lastActiveT = f.t
       const cutoff = f.t - this.windowMs
       while (this.frames.length && this.frames[0].t < cutoff) this.frames.shift()
     })
@@ -67,17 +74,24 @@ export class Identifier {
 
   private async tick() {
     if (this.busy || this.state.status === 'no-templates' || this.frames.length < 8) return
-    const now = this.frames[this.frames.length - 1].t
-    const recent = this.frames.filter((f) => f.t >= now - 1000)
-    if (motionEnergy(recent) < STILL_MOTION) {
-      this.emit({ ...this.state, status: 'still', scores: [] })
-      return
+    // Only match while the fingers are moving intentionally, plus once more
+    // right after they stop, on the window ending where the motion ended.
+    let frames = this.frames
+    if (!this.watcher.latest.active) {
+      if (this.lastActiveT <= this.settledT) {
+        if (this.state.status !== 'still' || this.state.showLast) this.emit({ ...this.state, status: 'still', scores: [] })
+        return
+      }
+      this.settledT = this.lastActiveT
+      frames = frames.filter((f) => f.t <= this.lastActiveT + 300)
+      if (frames.length < 8) return
     }
+
     // Try each hand as the primary one; which hand is "doing the move" is
     // ambiguous over a window that may include idle time before it.
-    const twoSlots = [0, 1].every((s) => this.frames.some((f) => f.hands.some((h) => h.slot === s)))
+    const twoSlots = [0, 1].every((s) => frames.some((f) => f.hands.some((h) => h.slot === s)))
     const windows = (twoSlots ? ([0, 1] as const) : ([undefined] as const))
-      .map((p) => extractFeatures(this.frames, this.aspect(), p))
+      .map((p) => extractFeatures(frames, this.aspect(), p))
       .filter((w) => w !== null)
     if (!windows.length) return
     this.busy = true

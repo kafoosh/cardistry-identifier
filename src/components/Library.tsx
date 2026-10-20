@@ -68,12 +68,40 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null)
   const [note, setNote] = useState('')
   const [test, setTest] = useState<SelfTestResult | 'running' | null>(null)
+  const [outliers, setOutliers] = useState<Set<string>>(new Set())
+  const [hideShared, setHideShared] = useState(() => {
+    try {
+      return localStorage.getItem('cardistry.hideShared') !== '0'
+    } catch {
+      return true
+    }
+  })
+  const toggleHideShared = () => {
+    setHideShared(!hideShared)
+    try {
+      localStorage.setItem('cardistry.hideShared', hideShared ? '0' : '1')
+    } catch {
+      // Not remembered in private mode.
+    }
+  }
+
+  // Flag takes that don't look like the rest of their move (they're left out of matching).
+  useEffect(() => {
+    if (!items?.length) return
+    let cancelled = false
+    void loadLocalTemplates()
+      .then((templates) => getMatcher().setTemplates(templates))
+      .then((ids) => !cancelled && setOutliers(new Set(ids)))
+    return () => {
+      cancelled = true
+    }
+  }, [items])
 
   const runSelfTest = async () => {
     setTest('running')
     const templates = await loadLocalTemplates()
     const matcher = getMatcher()
-    matcher.setTemplates(templates)
+    setOutliers(new Set(await matcher.setTemplates(templates)))
     setTest(await matcher.selfTest())
   }
 
@@ -112,11 +140,12 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
     setOpenId(openId === id ? null : id)
   }
 
+  const sharedHidden = hideShared ? (items ?? []).filter((r) => r.sharedId).length : 0
   const groups = useMemo(() => {
     const map = new Map<string, RecordingSummary[]>()
-    for (const r of items ?? []) map.set(r.moveName, [...(map.get(r.moveName) ?? []), r])
+    for (const r of (items ?? []).filter((r) => !(hideShared && r.sharedId))) map.set(r.moveName, [...(map.get(r.moveName) ?? []), r])
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
-  }, [items])
+  }, [items, hideShared])
 
   const exportAll = async () => {
     const all = await Promise.all((items ?? []).map((r) => loadRecording(r.id)))
@@ -176,6 +205,7 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
   if (error) return <p className="error">{error}</p>
   const shareable = sharingEnabled()
   const unsharedCount = (items ?? []).filter((r) => !r.sharedId).length
+  const moveCount = new Set((items ?? []).map((r) => r.moveName)).size
   if (!items) return <p className="muted">Loading…</p>
 
   if (!items.length) {
@@ -196,7 +226,7 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
     <div className="library">
       <div className="library-head">
         <p className="muted small">
-          {items.length} recording{items.length === 1 ? '' : 's'} of {groups.length} move{groups.length === 1 ? '' : 's'}
+          {items.length} recording{items.length === 1 ? '' : 's'} of {moveCount} move{moveCount === 1 ? '' : 's'}
           , saved on this device only.
         </p>
         <div className="controls">
@@ -213,6 +243,15 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
       </div>
       {test && test !== 'running' && <SelfTestReport result={test} />}
       {note && <p className="saved-note">{note}</p>}
+      {(sharedHidden > 0 || (!hideShared && items.some((r) => r.sharedId))) && (
+        <label className="check small">
+          <input type="checkbox" checked={hideShared} onChange={toggleHideShared} />
+          Hide takes already shared to the library{sharedHidden ? ` (${sharedHidden} hidden)` : ''}
+        </label>
+      )}
+      {groups.length === 0 && sharedHidden > 0 && (
+        <p className="muted small">Everything here is shared. Untick the box above to see those takes.</p>
+      )}
 
       {groups.map(([move, recs]) => (
         <section key={move} className="move-group">
@@ -230,6 +269,11 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
                     {r.longestGapMs ? ` · longest drop ${(r.longestGapMs / 1000).toFixed(2)}s` : ''}
                   </span>
                   {r.sharedId && <span className="pill">shared</span>}
+                  {outliers.has(r.id) && (
+                    <span className="pill warn" title="This take looks different from your other takes of this move, so it isn't used for recognition.">
+                      unusual
+                    </span>
+                  )}
                   <span className={`quality ${r.qualityScore < 0.6 ? 'low' : ''}`}>
                     {(r.qualityScore * 100).toFixed(0)}%
                   </span>
@@ -243,6 +287,7 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
                         height={open.videoHeight}
                         mirror={open.camera === 'user'}
                         videoUrl={videoUrl}
+                        videoStartMs={open.videoStartMs}
                       />
                     ) : (
                       <p className="muted small">Loading…</p>

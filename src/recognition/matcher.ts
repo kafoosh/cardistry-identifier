@@ -9,7 +9,7 @@ export class Matcher {
   private pending = new Map<number, (v: unknown) => void>()
 
   constructor() {
-    this.worker.onmessage = (e: MessageEvent<{ id: number; scores?: MoveScore[]; ms?: number; result?: SelfTestResult }>) => {
+    this.worker.onmessage = (e: MessageEvent<{ id: number; scores?: MoveScore[]; ms?: number; result?: SelfTestResult; outliers?: string[] }>) => {
       const resolve = this.pending.get(e.data.id)
       this.pending.delete(e.data.id)
       resolve?.(e.data)
@@ -20,8 +20,13 @@ export class Matcher {
     this.worker.postMessage(msg)
   }
 
-  setTemplates(templates: Template[]) {
-    this.post({ type: 'templates', templates })
+  /** Loads templates; resolves with the ids of outlier takes, which are left out of matching. */
+  setTemplates(templates: Template[]): Promise<string[]> {
+    const id = this.nextId++
+    return new Promise((resolve) => {
+      this.pending.set(id, (v) => resolve((v as { outliers: string[] }).outliers))
+      this.post({ type: 'templates', id, templates })
+    })
   }
 
   match(windows: FeatureSequence[], threshold: number): Promise<{ scores: MoveScore[]; ms: number }> {
