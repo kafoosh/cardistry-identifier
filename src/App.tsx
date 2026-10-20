@@ -941,7 +941,8 @@ export default function App() {
                 if (phase === 'live') void start(facing)
               }}
             />
-            Faster hand tracking (lighter model, a little less precise)
+            Faster but rougher hand tracking: loses a hand behind the deck more often and recognises moves less
+            well. Takes recorded with it match other takes poorly
           </label>
           <div className="hands">
             {[0, 1].map((slot) => (
