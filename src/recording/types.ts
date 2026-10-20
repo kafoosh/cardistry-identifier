@@ -36,6 +36,8 @@ export interface LocalRecording {
   /** Whether a video clip is stored alongside (in the `videos` store). */
   hasVideo: boolean
   videoMimeType?: string
+  /** Id in the shared library once uploaded. */
+  sharedId?: string
 }
 
 export type RecordingSummary = Omit<LocalRecording, 'frames'>

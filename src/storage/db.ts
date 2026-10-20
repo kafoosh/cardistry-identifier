@@ -75,14 +75,18 @@ export async function deleteRecording(id: string) {
   await done(tx)
 }
 
-export async function renameRecording(id: string, moveName: string) {
+async function updateSummary(id: string, patch: Partial<RecordingSummary>) {
   const db = await open()
   const tx = db.transaction('summaries', 'readwrite')
   const store = tx.objectStore('summaries')
   const summary = await request(store.get(id) as IDBRequest<RecordingSummary | undefined>)
-  if (summary) store.put({ ...summary, moveName })
+  if (summary) store.put({ ...summary, ...patch })
   await done(tx)
 }
+
+export const renameRecording = (id: string, moveName: string) => updateSummary(id, { moveName })
+
+export const markShared = (id: string, sharedId: string | undefined) => updateSummary(id, { sharedId })
 
 /** Asks the browser not to evict our data under storage pressure (best effort). */
 export async function requestPersistentStorage() {

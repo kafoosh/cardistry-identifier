@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import { sharingEnabled } from '../config'
 import type { LocalRecording, RecordingSummary } from '../recording/types'
-import { deleteRecording, listRecordings, loadRecording, loadVideo, renameRecording } from '../storage/db'
+import { deleteRecording, listRecordings, loadRecording, loadVideo, markShared, renameRecording } from '../storage/db'
 import { ReplayCanvas } from './ReplayCanvas'
+import { ShareSheet } from './ShareSheet'
 
 function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
@@ -26,6 +28,8 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
   const [open, setOpen] = useState<LocalRecording | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [sharing, setSharing] = useState<LocalRecording | null>(null)
+  const [note, setNote] = useState('')
 
   const refresh = () =>
     listRecordings()
@@ -89,6 +93,7 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
   }
 
   if (error) return <p className="error">{error}</p>
+  const shareable = sharingEnabled()
   if (!items) return <p className="muted">Loading…</p>
 
   if (!items.length) {
@@ -114,6 +119,7 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
         </p>
         <button onClick={exportAll}>Export all (JSON)</button>
       </div>
+      {note && <p className="saved-note">{note}</p>}
 
       {groups.map(([move, recs]) => (
         <section key={move} className="move-group">
@@ -130,6 +136,7 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
                     · {r.device}
                     {r.longestGapMs ? ` · longest drop ${(r.longestGapMs / 1000).toFixed(2)}s` : ''}
                   </span>
+                  {r.sharedId && <span className="pill">shared</span>}
                   <span className={`quality ${r.qualityScore < 0.6 ? 'low' : ''}`}>
                     {(r.qualityScore * 100).toFixed(0)}%
                   </span>
@@ -148,6 +155,11 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
                       <p className="muted small">Loading…</p>
                     )}
                     <div className="controls">
+                      {shareable && open && !r.sharedId && (
+                        <button className="primary" onClick={() => setSharing(open)}>
+                          Share to library
+                        </button>
+                      )}
                       <button onClick={() => rename(r)}>Rename</button>
                       {open && (
                         <button
@@ -182,6 +194,23 @@ export function Library({ onRecordMore }: { onRecordMore: () => void }) {
           </ul>
         </section>
       ))}
+
+      {sharing && (
+        <ShareSheet
+          recording={sharing}
+          onClose={() => setSharing(null)}
+          onDone={async (res) => {
+            await markShared(sharing.id, res.id)
+            setSharing(null)
+            setNote(
+              res.status === 'approved'
+                ? `Shared to ${res.move.name}. Thanks!`
+                : `Shared to ${res.move.name}. Tracking was patchy, so it's held for review before it's used for recognition.`,
+            )
+            await refresh()
+          }}
+        />
+      )}
     </div>
   )
 }

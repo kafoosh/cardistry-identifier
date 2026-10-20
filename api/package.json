@@ -1,0 +1,16 @@
+{
+  "name": "cardistry-api",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261019.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.151.2"
+  },
+  "private": true
+}

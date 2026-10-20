@@ -25,3 +25,6 @@ dist-ssr
 
 # Copied from node_modules by scripts/copy-wasm.mjs
 public/mediapipe
+
+# Wrangler local state
+.wrangler

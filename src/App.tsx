@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Library } from './components/Library'
 import { SaveSheet, type SaveDetails } from './components/SaveSheet'
+import { SharedLibrary } from './components/SharedLibrary'
 import { canRecordVideo, describeDevice, longestGapMs, MAX_RECORDING_MS, qualityScore, Recorder, type Capture } from './recording/recorder'
 import { listRecordings, requestPersistentStorage, saveRecording } from './storage/db'
 import { describeCameraError, hasMultipleCameras, openCamera, stopStream } from './tracking/camera'
@@ -11,7 +12,7 @@ import { TrackingLoop } from './tracking/trackingLoop'
 import type { CameraFacing, Handedness } from './tracking/types'
 
 type Phase = 'idle' | 'loading' | 'live' | 'error'
-type Tab = 'live' | 'library'
+type Tab = 'live' | 'library' | 'shared'
 type RecState = 'ready' | 'countdown' | 'recording' | 'review'
 
 const COUNTDOWN_S = 3
@@ -207,7 +208,7 @@ export default function App() {
 
   const switchTab = (next: Tab) => {
     if (next === tab) return
-    if (next === 'library') {
+    if (next !== 'live') {
       stop()
       setPhase('idle')
     }
@@ -229,6 +230,9 @@ export default function App() {
           <button className={tab === 'library' ? 'selected' : ''} onClick={() => switchTab('library')}>
             My moves
           </button>
+          <button className={tab === 'shared' ? 'selected' : ''} onClick={() => switchTab('shared')}>
+            Library
+          </button>
         </nav>
         {live && tab === 'live' && (
           <div className="badges">
@@ -242,6 +246,12 @@ export default function App() {
       {tab === 'library' && (
         <main className="library-wrap">
           <Library onRecordMore={() => switchTab('live')} />
+        </main>
+      )}
+
+      {tab === 'shared' && (
+        <main className="library-wrap">
+          <SharedLibrary />
         </main>
       )}
 
