@@ -9,6 +9,10 @@ import type { MoveScore, Template } from './recognizer'
 
 const INTERVAL_MS = 400
 const HOLD_MS = 2500
+/** A guess has to stay the top answer this many matches in a row before it is shown: one lucky window isn't a move. */
+const CONFIRM_TICKS = 2
+/** Strength below this is a weak fit that isn't worth announcing. */
+const MIN_STRENGTH = 0.25
 
 /** Who a guess is about: one hand (by its tracked label), or both hands together. */
 export type HandLabel = 'Left' | 'Right' | 'Both'
@@ -55,6 +59,8 @@ export class Identifier {
   private lastActiveT = -Infinity
   /** lastActiveT already given a final match after the hands went idle. */
   private settledT = -Infinity
+  /** The guesses from the previous match and how many matches in a row they have held. */
+  private pending: { key: string; ticks: number } | null = null
 
   constructor(
     loop: TrackingLoop,
@@ -72,7 +78,13 @@ export class Identifier {
     this.onUpdate = onUpdate
     const longest = Math.max(1000, ...templates.map((t) => t.features.durationMs))
     this.windowMs = Math.min(12_000, longest * 1.6)
-    this.state = { status: templates.length ? 'still' : 'no-templates', groups: [], last: null, showLast: false, matchMs: 0 }
+    this.state = {
+      status: templates.length ? 'still' : 'no-templates',
+      groups: [],
+      last: null,
+      showLast: false,
+      matchMs: 0,
+    }
     this.unsubscribe = loop.onFrame((f) => {
       this.frames.push(f)
       if (this.watcher.latest.moving) this.lastActiveT = f.t
@@ -93,12 +105,16 @@ export class Identifier {
     // Only match while the fingers are moving intentionally, plus once more
     // right after they stop, on the window ending where the motion ended.
     let frames = this.frames
+    let settling = false
     if (!this.watcher.latest.active) {
       if (this.lastActiveT <= this.settledT) {
-        if (this.state.status !== 'still' || this.state.showLast) this.emit({ ...this.state, status: 'still', groups: [] })
+        this.pending = null
+        if (this.state.status !== 'still' || this.state.showLast)
+          this.emit({ ...this.state, status: 'still', groups: [] })
         return
       }
       this.settledT = this.lastActiveT
+      settling = true
       frames = frames.filter((f) => f.t <= this.lastActiveT + 300)
       if (frames.length < 8) return
     }
@@ -127,10 +143,19 @@ export class Identifier {
       const { result, ms } = await this.matcher.match(query, this.threshold())
       const groups: IdentifyState['groups'] = []
       if (result.both.length) groups.push({ hand: 'Both', scores: result.both.slice(0, 3) })
-      for (const s of result.single) if (s.scores.length) groups.push({ hand: label(s.slot), scores: s.scores.slice(0, 3) })
+      for (const s of result.single)
+        if (s.scores.length) groups.push({ hand: label(s.slot), scores: s.scores.slice(0, 3) })
       const guesses = pickGuesses(result, label)
       groups.sort((a, b) => (b.scores[0]?.strength ?? 0) - (a.scores[0]?.strength ?? 0))
-      const last = guesses.length ? { guesses, at: Date.now() } : this.state.last
+      // Only a guess that holds across consecutive matches becomes the answer.
+      const key = guesses.map((g) => `${g.hand}:${g.moveName}`).join('|')
+      if (!guesses.length) this.pending = null
+      else if (this.pending?.key === key) this.pending.ticks++
+      else this.pending = { key, ticks: 1 }
+      // The last look after the hands stop is the only one a short move gets, so a strong fit counts on its own there.
+      const strong = guesses.length > 0 && Math.max(...guesses.map((g) => g.strength)) >= 0.5
+      const confirmed = this.pending !== null && (this.pending.ticks >= CONFIRM_TICKS || (settling && strong))
+      const last = confirmed ? { guesses, at: Date.now() } : this.state.last
       this.emit({ status: 'matching', groups, last, showLast: false, matchMs: ms })
     } finally {
       this.busy = false
@@ -152,9 +177,10 @@ function pickGuesses(result: MatchResult, label: (slot: 0 | 1) => HandLabel): Ha
   const both = result.both[0]
   const singles = result.single
     .map((s) => ({ slot: s.slot, top: s.scores[0] }))
-    .filter((s) => s.top && s.top.strength > 0)
+    .filter((s) => s.top && s.top.strength >= MIN_STRENGTH)
   const bestSingle = Math.max(0, ...singles.map((s) => s.top.strength))
-  if (both && both.strength > 0 && both.strength >= bestSingle * 0.9) return [{ hand: 'Both', moveName: both.moveName, strength: both.strength, withCards: Boolean(both.withCards) }]
+  if (both && both.strength >= MIN_STRENGTH && both.strength >= bestSingle * 0.9)
+    return [{ hand: 'Both', moveName: both.moveName, strength: both.strength, withCards: Boolean(both.withCards) }]
   return singles.map((s) => ({
     hand: label(s.slot),
     slot: s.slot,

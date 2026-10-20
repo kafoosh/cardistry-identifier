@@ -82,9 +82,11 @@ export interface SubsequenceMatch {
  * Subsequence DTW: finds where the template best matches the query when the
  * match must end at the query's last frame but may start anywhere. This is
  * what live identification needs ("did that move just finish?"). Matches
- * spanning less than half or more than twice the template's length are
+ * spanning less than three quarters or more than 1.8× the template's length are
  * rejected, so a single pose can't match a whole move.
  */
+const MIN_SPAN = 0.75
+const MAX_SPAN = 1.8
 export function subsequenceDtw(query: FeatureSequence, template: FeatureSequence): SubsequenceMatch {
   const n = query.frames
   const m = template.frames
@@ -130,6 +132,7 @@ export function subsequenceDtw(query: FeatureSequence, template: FeatureSequence
   }
   const start = prevStart[m - 1]
   const span = n - start
-  if (span < m * 0.5 || span > m * 2) return { distance: Infinity, start }
+  // A match must have taken most of the template's time: a fast fragment of a move isn't the move.
+  if (span < m * MIN_SPAN || span > m * MAX_SPAN) return { distance: Infinity, start }
   return { distance: prev[m - 1] / prevLen[m - 1], start }
 }

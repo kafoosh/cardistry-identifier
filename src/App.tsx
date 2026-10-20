@@ -102,6 +102,12 @@ export default function App() {
     saveRecordSetup(v)
   }
   const [savedNote, setSavedNote] = useState('')
+  // The note is a toast: it goes on its own after a few seconds, and at once when the mode changes.
+  useEffect(() => {
+    if (!savedNote || savedNote.endsWith('…')) return
+    const id = window.setTimeout(() => setSavedNote(''), 3500)
+    return () => clearTimeout(id)
+  }, [savedNote])
   const [recordVideo, setRecordVideo] = useState(() => {
     try {
       return localStorage.getItem('cardistry.recordVideo') === '1'
@@ -468,7 +474,10 @@ export default function App() {
   }
 
   const changeMode = (m: Mode) => {
-    if (recState === 'ready') setMode(m)
+    if (recState === 'ready') {
+      setMode(m)
+      setSavedNote('')
+    }
   }
 
   // Swipe across the camera view to switch between Record and Identify.
