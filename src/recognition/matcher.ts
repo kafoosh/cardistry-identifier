@@ -1,6 +1,5 @@
-import type { FeatureSequence } from './features'
-import type { MatcherRequest } from './matcher.worker'
-import type { MoveScore, SelfTestResult, Template } from './recognizer'
+import type { MatcherRequest, MatchQuery, MatchResult } from './matcher.worker'
+import type { SelfTestResult, Template } from './recognizer'
 
 /** Runs DTW matching in a Web Worker so tracking and the UI stay smooth. */
 export class Matcher {
@@ -9,7 +8,7 @@ export class Matcher {
   private pending = new Map<number, (v: unknown) => void>()
 
   constructor() {
-    this.worker.onmessage = (e: MessageEvent<{ id: number; scores?: MoveScore[]; ms?: number; result?: SelfTestResult; outliers?: string[] }>) => {
+    this.worker.onmessage = (e: MessageEvent<{ id: number; match?: MatchResult; ms?: number; result?: SelfTestResult; outliers?: string[] }>) => {
       const resolve = this.pending.get(e.data.id)
       this.pending.delete(e.data.id)
       resolve?.(e.data)
@@ -29,11 +28,14 @@ export class Matcher {
     })
   }
 
-  match(windows: FeatureSequence[], threshold: number): Promise<{ scores: MoveScore[]; ms: number }> {
+  match(query: MatchQuery, threshold: number): Promise<{ result: MatchResult; ms: number }> {
     const id = this.nextId++
     return new Promise((resolve) => {
-      this.pending.set(id, resolve as (v: unknown) => void)
-      this.post({ type: 'match', id, windows, threshold })
+      this.pending.set(id, (v) => {
+        const d = v as { match: MatchResult; ms: number }
+        resolve({ result: d.match, ms: d.ms })
+      })
+      this.post({ type: 'match', id, query, threshold })
     })
   }
 

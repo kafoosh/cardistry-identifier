@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { detectActiveHands, keepHands } from '../recording/activeHands'
 import { longestGapMs, qualityScore, type Capture } from '../recording/recorder'
 import { sliceFrames } from '../recognition/motion'
+import { findRepeats } from '../recognition/repeats'
 import { SLOT_COLOURS } from '../tracking/draw'
 import type { Frame } from '../tracking/types'
 import { MovePicker } from './MovePicker'
@@ -15,6 +16,14 @@ export interface SaveDetails {
   frames: Frame[]
   durationMs: number
   /** Frame time at which the kept video's time 0 falls, after trimming. */
+  videoStartMs: number
+  /** Set when the take is a move repeated back to back: one entry per repetition, saved as separate takes. */
+  repeats?: Take[]
+}
+
+export interface Take {
+  frames: Frame[]
+  durationMs: number
   videoStartMs: number
 }
 
@@ -45,6 +54,20 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
   const frames = useMemo(() => keepHands(trimmed, kept), [trimmed, kept])
   const trimBase = capture.frames.find((f) => f.t >= trim.startMs)?.t ?? 0
   const durationMs = frames.length ? frames[frames.length - 1].t : 0
+  const repeats = useMemo(() => findRepeats(frames, width / height || 4 / 3), [frames, width, height])
+  const [splitRepeats, setSplitRepeats] = useState(true)
+  const repeatTakes = (): Take[] | undefined => {
+    if (!repeats || !splitRepeats) return undefined
+    return repeats.segments.map((seg) => {
+      const segFrames = sliceFrames(frames, seg.startMs, seg.endMs)
+      const segBase = frames.find((f) => f.t >= seg.startMs)?.t ?? 0
+      return {
+        frames: segFrames,
+        durationMs: segFrames.length ? segFrames[segFrames.length - 1].t : 0,
+        videoStartMs: capture.videoStartMs - trimBase - segBase,
+      }
+    })
+  }
 
   const videoUrl = useMemo(() => (capture.video ? URL.createObjectURL(capture.video) : null), [capture.video])
   useEffect(() => () => void (videoUrl && URL.revokeObjectURL(videoUrl)), [videoUrl])
@@ -63,7 +86,7 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
     })
 
   const save = (again: boolean) => {
-    if (canSave) onSave({ moveName: moveName.trim(), keepVideo, frames, durationMs, videoStartMs: capture.videoStartMs - trimBase }, again)
+    if (canSave) onSave({ moveName: moveName.trim(), keepVideo, frames, durationMs, videoStartMs: capture.videoStartMs - trimBase, repeats: repeatTakes() }, again)
   }
 
   return (
@@ -96,6 +119,7 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
         />
         <TrimBar
           durationMs={fullMs}
+          marks={repeats && splitRepeats ? repeats.segments.map((seg) => seg.startMs + trimBase).concat(repeats.segments[repeats.segments.length - 1].endMs + trimBase) : []}
           value={trim}
           onChange={(next, moved) => {
             setTrim(next)
@@ -108,6 +132,12 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
           {gap > 0 ? ` · longest drop ${(gap / 1000).toFixed(2)}s` : ' · no drops'}
           {capture.video ? ' · video clip captured' : ''}
         </p>
+        {repeats && (
+          <label className="check">
+            <input type="checkbox" checked={splitRepeats} onChange={(e) => setSplitRepeats(e.target.checked)} />
+            Found {repeats.segments.length} repeats of about {(repeats.periodMs / 1000).toFixed(1)}s. Save each as its own take
+          </label>
+        )}
         {tooShort && <p className="hint">This take is very short. Widen the trim, or try again and hold the move for longer.</p>}
 
         {activity.some((h) => h.presence > 0) && (
@@ -142,10 +172,10 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
         <div className="sheet-actions">
           <button onClick={onDiscard}>Discard</button>
           <button onClick={() => save(false)} disabled={!canSave}>
-            Save
+            {repeats && splitRepeats ? `Save ${repeats.segments.length}` : 'Save'}
           </button>
           <button className="primary" onClick={() => save(true)} disabled={!canSave}>
-            Save &amp; record another
+            {repeats && splitRepeats ? `Save ${repeats.segments.length} & record more` : 'Save & record another'}
           </button>
         </div>
       </div>

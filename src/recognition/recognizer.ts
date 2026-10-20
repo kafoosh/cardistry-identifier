@@ -5,6 +5,8 @@ export interface Template {
   id: string
   moveName: string
   features: FeatureSequence
+  /** One-hand moves are matched against each hand on its own; two-hand moves against both together. */
+  hands: 1 | 2
   source: 'mine' | 'shared'
 }
 

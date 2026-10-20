@@ -945,3 +945,29 @@ button.link {
   background: var(--accent);
   cursor: ew-resize;
 }
+
+.trim-mark {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text, #fff);
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.guess-hands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+
+.guess-hands > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.score-group + .score-group {
+  margin-top: 8px;
+}

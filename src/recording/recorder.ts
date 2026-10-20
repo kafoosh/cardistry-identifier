@@ -1,7 +1,8 @@
 import type { TrackingLoop } from '../tracking/trackingLoop'
 import type { Frame } from '../tracking/types'
 
-export const MAX_RECORDING_MS = 10_000
+/** Long enough to repeat a move several times in one take. */
+export const MAX_RECORDING_MS = 30_000
 
 export interface Capture {
   frames: Frame[]

@@ -1,4 +1,4 @@
-import type { IdentifyState } from '../recognition/identifier'
+import type { HandLabel, IdentifyState } from '../recognition/identifier'
 
 interface Props {
   state: IdentifyState | null
@@ -30,31 +30,47 @@ export function IdentifyPanel({ state, templateCount, moveCount, sharedCount, sh
     )
   }
   const recent = state.showLast ? state.last : null
+  const handName = (h: HandLabel) => (h === 'Both' ? 'both hands' : `${h.toLowerCase()} hand`)
   return (
     <div className="identify">
       <div className="guess" aria-live="polite">
         {recent ? (
-          <>
-            <span className="muted small">That looked like</span>
-            <strong>{recent.moveName}</strong>
-          </>
+          recent.guesses.length === 1 ? (
+            <>
+              <span className="muted small">That looked like</span>
+              <strong>{recent.guesses[0].moveName}</strong>
+              <span className="muted small">{handName(recent.guesses[0].hand)}</span>
+            </>
+          ) : (
+            <div className="guess-hands">
+              {recent.guesses.map((g) => (
+                <div key={g.hand}>
+                  <span className="muted small">{g.hand} hand</span>
+                  <strong>{g.moveName}</strong>
+                </div>
+              ))}
+            </div>
+          )
         ) : (
           <span className="muted">{state.status === 'still' ? 'Waiting for a move…' : 'Watching…'}</span>
         )}
       </div>
-      {state.scores.length > 0 && (
-        <ol className="scores">
-          {state.scores.map((s) => (
-            <li key={s.moveName}>
-              <span className="score-name">{s.moveName}</span>
-              <span className="bar">
-                <span style={{ width: `${Math.round(s.strength * 100)}%` }} />
-              </span>
-              <span className="muted small tabular">{s.distance.toFixed(2)}</span>
-            </li>
-          ))}
-        </ol>
-      )}
+      {state.groups.map((g) => (
+        <div key={g.hand} className="score-group">
+          {state.groups.length > 1 && <span className="muted small">{g.hand === 'Both' ? 'Both hands' : `${g.hand} hand`}</span>}
+          <ol className="scores">
+            {g.scores.map((s) => (
+              <li key={s.moveName}>
+                <span className="score-name">{s.moveName}</span>
+                <span className="bar">
+                  <span style={{ width: `${Math.round(s.strength * 100)}%` }} />
+                </span>
+                <span className="muted small tabular">{s.distance.toFixed(2)}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ))}
       <label className="field slider">
         <span>
           Sensitivity <span className="tabular">{sensitivity.toFixed(1)}×</span>

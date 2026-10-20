@@ -1,6 +1,8 @@
 interface Props {
   durationMs: number
   value: { startMs: number; endMs: number }
+  /** Cut points to show inside the kept part (where repeats are split). */
+  marks?: number[]
   /** `moved` says which handle changed, so the replay can show that frame. */
   onChange: (value: { startMs: number; endMs: number }, moved: 'start' | 'end') => void
 }
@@ -9,7 +11,7 @@ interface Props {
 const MIN_GAP_MS = 300
 
 /** Two handles over the take's timeline that set where the saved clip starts and ends. */
-export function TrimBar({ durationMs, value, onChange }: Props) {
+export function TrimBar({ durationMs, value, marks = [], onChange }: Props) {
   const max = Math.max(durationMs, 1)
   const pct = (ms: number) => `${(ms / max) * 100}%`
   return (
@@ -27,6 +29,9 @@ export function TrimBar({ durationMs, value, onChange }: Props) {
       </div>
       <div className="trim-track">
         <div className="trim-kept" style={{ left: pct(value.startMs), width: pct(value.endMs - value.startMs) }} />
+        {marks.map((ms) => (
+          <div key={ms} className="trim-mark" style={{ left: pct(ms) }} />
+        ))}
         <input
           type="range"
           min={0}
