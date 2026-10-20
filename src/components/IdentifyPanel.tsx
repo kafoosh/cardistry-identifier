@@ -29,10 +29,12 @@ export function IdentifyStatus({ state, templateCount, moveCount, sharedCount, s
   return (
     <p className="identify-status small muted">
       <span className={`live-dot ${state.status === 'matching' ? 'on' : ''}`} />
-      {state.status === 'still' ? 'Waiting for a move' : 'Watching'} · {templateCount} take
-      {templateCount === 1 ? '' : 's'} of {moveCount} move{moveCount === 1 ? '' : 's'}
-      {sharedCount ? ` (${sharedCount} from the library)` : ''}
-      {sharedError ? ', library unreachable' : ''}
+      <span className="identify-status-text">
+        {state.status === 'still' ? 'Waiting for a move' : 'Watching'} · {templateCount} take
+        {templateCount === 1 ? '' : 's'} of {moveCount} move{moveCount === 1 ? '' : 's'}
+        {sharedCount ? ` (${sharedCount} from the library)` : ''}
+        {sharedError ? ', library unreachable' : ''}
+      </span>
     </p>
   )
 }
