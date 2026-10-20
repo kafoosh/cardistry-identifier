@@ -112,6 +112,7 @@ export default function App() {
   const [trackCards, setTrackCards] = useState(() => readPref('cardistry.trackCards', true))
   const [showCards, setShowCards] = useState(() => readPref('cardistry.showCards', true))
   const [hud, setHud] = useState(() => readPref('cardistry.hud', true))
+  const [wireframe, setWireframe] = useState(() => readPref('cardistry.wireframe', true))
   // One tracker for the app's life; it keeps the learned deck between camera sessions.
   const [cardTracker] = useState(() => new CardTracker(loadDeck()))
   const trackCardsRef = useRef(trackCards)
@@ -456,7 +457,8 @@ export default function App() {
     if (!loop) return
     loop.cards = trackCards && !cardsSkipped ? cardTracker : null
     loop.showCards = showCards
-  }, [trackCards, showCards, cardsSkipped, phase, cardTracker])
+    loop.showWireframe = wireframe
+  }, [trackCards, showCards, wireframe, cardsSkipped, phase, cardTracker])
 
   const finishDeck = useCallback(() => setDeckStep('done'), [])
   const recalibrateDeck = () => {
@@ -466,7 +468,6 @@ export default function App() {
     setDeckStep('calibrating')
     setShowSettings(false)
   }
-
 
   const changeMode = (m: Mode) => {
     if (recState === 'ready') setMode(m)
@@ -564,22 +565,41 @@ export default function App() {
               <span className="rec-dot" /> REC {(elapsed / 1000).toFixed(1)}s / {MAX_RECORDING_MS / 1000}s
             </div>
           )}
-          {live && showGuide && recState === 'ready' && !calibrating && (
+          {live && showGuide && recState === 'ready' && !calibrating && mode === 'record' && (
             <div className="guide" aria-hidden="true">
               <span>Keep both hands and the deck inside the frame</span>
             </div>
           )}
           {live && mode === 'identify' && hud && <Hud loopRef={loopRef} state={identify} mirror={mirror} />}
-          {live && mode === 'identify' && (
-            <button
-              className={`hud-toggle ${hud ? 'on' : ''}`}
-              onClick={() => {
-                setHud(!hud)
-                remember('cardistry.hud', !hud)
-              }}
-              aria-pressed={hud}
-            >
-              HUD
+          {live && !calibrating && (
+            <div className="layer-toggles">
+              <button
+                className={wireframe ? 'on' : ''}
+                onClick={() => {
+                  setWireframe(!wireframe)
+                  remember('cardistry.wireframe', !wireframe)
+                }}
+                aria-pressed={wireframe}
+              >
+                Wireframe
+              </button>
+              {mode === 'identify' && (
+                <button
+                  className={hud ? 'on' : ''}
+                  onClick={() => {
+                    setHud(!hud)
+                    remember('cardistry.hud', !hud)
+                  }}
+                  aria-pressed={hud}
+                >
+                  HUD
+                </button>
+              )}
+            </div>
+          )}
+          {live && mode === 'record' && trackCards && !calibrating && recState === 'ready' && (
+            <button className="deck-chip" onClick={recalibrateDeck}>
+              {cardsSkipped ? 'Track my deck' : 'Recalibrate deck'}
             </button>
           )}
           {live && savedNote && recState !== 'recording' && <div className="toast">{savedNote}</div>}
@@ -697,18 +717,18 @@ export default function App() {
             </div>
             <p className="shutter-hint small muted" hidden={mode === 'identify'}>
               {recState === 'recording'
-                  ? autoStart
-                    ? 'Stops when your fingers settle, or tap to stop'
-                    : 'Tap to stop'
-                  : recState === 'countdown'
-                    ? 'Get ready… tap to cancel'
-                    : recState === 'armed'
-                      ? 'Do the move. It stops when your fingers settle, or tap to stop'
-                      : !setup.moveName
-                        ? 'Name the move above first'
-                        : autoStart
-                          ? `Tap, then start ${setup.moveName} when ready. Swipe left to identify`
-                          : `Tap to record ${setup.moveName}. Swipe left to identify`}
+                ? autoStart
+                  ? 'Stops when your fingers settle, or tap to stop'
+                  : 'Tap to stop'
+                : recState === 'countdown'
+                  ? 'Get ready… tap to cancel'
+                  : recState === 'armed'
+                    ? 'Do the move. It stops when your fingers settle, or tap to stop'
+                    : !setup.moveName
+                      ? 'Name the move above first'
+                      : autoStart
+                        ? `Tap, then start ${setup.moveName} when ready. Swipe left to identify`
+                        : `Tap to record ${setup.moveName}. Swipe left to identify`}
             </p>
           </div>
         )}
@@ -797,9 +817,7 @@ export default function App() {
               Show card boxes on the camera
             </label>
           )}
-          {trackCards && (
-            <button onClick={recalibrateDeck}>Learn my deck again</button>
-          )}
+          {trackCards && <button onClick={recalibrateDeck}>Learn my deck again</button>}
           <label className="check">
             <input
               type="checkbox"

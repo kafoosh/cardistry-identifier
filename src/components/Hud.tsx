@@ -16,13 +16,12 @@ interface Box {
   y1: number
 }
 
-const CYAN = '#5ef2ff'
-const MAGENTA = '#ff5ef2'
+const ONE = '#e6fbff'
+const BOTH = '#ffd9f6'
 
 /**
- * Futuristic targeting overlay for Identify: brackets, a scan line and a
- * spinning reticle around the hand (or both hands) doing the move, with a
- * leader line to a label. Drawn on its own unmirrored canvas, so the text
+ * Light targeting overlay for Identify: small corner marks around the hand
+ * (or both hands) doing the move, with the move's name beside them. Drawn on its own unmirrored canvas, so the text
  * reads correctly; positions are mirrored by hand to line up with the preview.
  */
 export function Hud({ loopRef, state, mirror }: Props) {
@@ -43,7 +42,7 @@ export function Hud({ loopRef, state, mirror }: Props) {
 
   useEffect(() => {
     let raf = 0
-    const draw = (now: number) => {
+    const draw = () => {
       raf = requestAnimationFrame(draw)
       const canvas = canvasRef.current
       const frame = frameRef.current
@@ -85,7 +84,7 @@ export function Hud({ loopRef, state, mirror }: Props) {
             }
           : px
         boxes.current.set(g.hand, b)
-        drawTarget(ctx, b, g.moveName, g.strength, g.withCards, g.hand === 'Both' ? MAGENTA : CYAN, unit, now, w, h, labels)
+        drawTarget(ctx, b, g.moveName, g.strength, g.hand === 'Both' ? BOTH : ONE, unit, w, h, labels)
       }
       for (const k of [...boxes.current.keys()]) if (!seen.has(k)) boxes.current.delete(k)
     }
@@ -138,10 +137,8 @@ function drawTarget(
   b: Box,
   name: string,
   strength: number,
-  withCards: boolean,
   colour: string,
   unit: number,
-  now: number,
   canvasW: number,
   canvasH: number,
   /** Labels already placed this frame; this one moves to avoid them. */
@@ -149,17 +146,13 @@ function drawTarget(
 ) {
   const bw = b.x1 - b.x0
   const bh = b.y1 - b.y0
-  const cx = (b.x0 + b.x1) / 2
-  const cy = (b.y0 + b.y1) / 2
-  const corner = Math.min(bw, bh) * 0.22
+  const corner = Math.min(bw, bh) * 0.12
   ctx.save()
   ctx.strokeStyle = colour
-  ctx.fillStyle = colour
-  ctx.shadowColor = colour
-  ctx.shadowBlur = 12 * unit
-  ctx.lineWidth = 2.5 * unit
+  ctx.globalAlpha = 0.55
+  ctx.lineWidth = 1.5 * unit
 
-  // Corner brackets.
+  // Small corner marks only, so the hands stay clear.
   ctx.beginPath()
   for (const [x, y, dx, dy] of [
     [b.x0, b.y0, 1, 1],
@@ -173,70 +166,26 @@ function drawTarget(
   }
   ctx.stroke()
 
-  // Faint frame and a scan line sweeping down.
-  ctx.globalAlpha = 0.18
-  ctx.lineWidth = 1 * unit
-  ctx.strokeRect(b.x0, b.y0, bw, bh)
-  const scan = b.y0 + ((now / 1400) % 1) * bh
-  const grad = ctx.createLinearGradient(0, scan - 24 * unit, 0, scan)
-  grad.addColorStop(0, 'transparent')
-  grad.addColorStop(1, colour)
-  ctx.globalAlpha = 0.35
-  ctx.fillStyle = grad
-  ctx.fillRect(b.x0, scan - 24 * unit, bw, 24 * unit)
+  // A quiet label just above the box (below it if there is no room).
+  const fontPx = Math.round(12 * unit)
+  ctx.font = `500 ${fontPx}px system-ui, sans-serif`
+  const text = `${name} · ${Math.round(strength * 100)}%`
+  const tw = ctx.measureText(text).width + 12 * unit
+  const th = fontPx * 1.7
+  const lx = Math.min(canvasW - tw - 4 * unit, Math.max(4 * unit, b.x0))
+  let ly = b.y0 - th - 4 * unit
+  if (ly < 4 * unit) ly = Math.min(canvasH - th - 4 * unit, b.y1 + 4 * unit)
+  const hits = (y: number) => placed.some((p) => lx < p.x1 && lx + tw > p.x0 && y < p.y1 && y + th > p.y0)
+  for (let k = 0; k < 6 && hits(ly); k++) ly = Math.min(canvasH - th - 4 * unit, ly + th + 4 * unit)
+  placed.push({ x0: lx, y0: ly, x1: lx + tw, y1: ly + th })
+  ctx.globalAlpha = 0.6
+  ctx.fillStyle = '#000'
+  ctx.beginPath()
+  ctx.roundRect(lx, ly, tw, th, th / 2)
+  ctx.fill()
+  ctx.globalAlpha = 0.95
   ctx.fillStyle = colour
-
-  // Spinning reticle at the centre.
-  ctx.globalAlpha = 0.85
-  ctx.lineWidth = 2 * unit
-  const r = Math.min(bw, bh) * 0.16
-  ctx.setLineDash([8 * unit, 6 * unit])
-  ctx.lineDashOffset = -now / 20
-  ctx.beginPath()
-  ctx.arc(cx, cy, r, 0, Math.PI * 2)
-  ctx.stroke()
-  ctx.setLineDash([])
-  ctx.beginPath()
-  for (const [dx, dy] of [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ]) {
-    ctx.moveTo(cx + dx * r * 0.5, cy + dy * r * 0.5)
-    ctx.lineTo(cx + dx * r * 1.35, cy + dy * r * 1.35)
-  }
-  ctx.stroke()
-
-  // Leader line to a label above the box, kept on screen.
-  const fontPx = Math.round(13 * unit)
-  ctx.font = `600 ${fontPx}px ui-monospace, SFMono-Regular, Menlo, monospace`
-  const title = name.toUpperCase()
-  const sub = `${Math.round(strength * 100)}% · ${withCards ? 'FINGERS+CARDS' : 'FINGERS'}`
-  const tw = Math.max(ctx.measureText(title).width, ctx.measureText(sub).width * 0.8) + 16 * unit
-  const th = fontPx * 2.4
-  const goRight = cx < canvasW / 2
-  const lx = goRight ? Math.min(canvasW - tw - 4 * unit, b.x1 + 8 * unit) : Math.max(4 * unit, b.x0 - tw - 8 * unit)
-  // Above the box if there's room, else below; step away from labels already drawn.
-  let labelY = Math.max(th + 4 * unit, b.y0 - 18 * unit)
-  const hits = (y: number) => placed.some((p) => lx < p.x1 && lx + tw > p.x0 && y - th < p.y1 && y > p.y0)
-  for (let k = 0; k < 6 && hits(labelY); k++) labelY = Math.min(canvasH - 4 * unit, labelY + th + 6 * unit)
-  placed.push({ x0: lx, y0: labelY - th, x1: lx + tw, y1: labelY })
-  ctx.globalAlpha = 0.9
-  ctx.lineWidth = 1.5 * unit
-  ctx.beginPath()
-  ctx.moveTo(goRight ? b.x1 : b.x0, b.y0)
-  ctx.lineTo(goRight ? lx : lx + tw, labelY)
-  ctx.stroke()
-  ctx.shadowBlur = 0
-  ctx.globalAlpha = 0.65
-  ctx.fillStyle = '#04121a'
-  ctx.fillRect(lx, labelY - th, tw, th)
-  ctx.globalAlpha = 1
-  ctx.strokeRect(lx, labelY - th, tw, th)
-  ctx.fillStyle = colour
-  ctx.fillText(title, lx + 8 * unit, labelY - th + fontPx * 1.1)
-  ctx.font = `500 ${Math.round(fontPx * 0.75)}px ui-monospace, SFMono-Regular, Menlo, monospace`
-  ctx.fillText(sub, lx + 8 * unit, labelY - th + fontPx * 2.05)
+  ctx.textBaseline = 'middle'
+  ctx.fillText(text, lx + 6 * unit, ly + th / 2)
   ctx.restore()
 }

@@ -34,6 +34,8 @@ export class TrackingLoop {
   /** Card tracking, when switched on. Runs every other frame; frames in between reuse the last packets. */
   cards: CardTracker | null = null
   showCards = true
+  /** Draw the hand skeletons (and packets) over the preview. */
+  showWireframe = true
   private cardTick = 0
   private lastPackets: Packet[] = []
 
@@ -99,8 +101,10 @@ export class TrackingLoop {
         if (this.cardTick++ % 2 === 0 || !frame.hands.length) this.lastPackets = cards.process(v, frame.hands)
         frame.cards = this.lastPackets
       }
-      drawHands(this.ctx, frame.hands)
-      if (frame.cards && this.showCards) drawCards(this.ctx, frame.cards)
+      if (this.showWireframe) {
+        drawHands(this.ctx, frame.hands)
+        if (frame.cards && this.showCards) drawCards(this.ctx, frame.cards)
+      } else this.ctx.clearRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height)
       this.stats.push(frame, inferenceMs)
       for (const l of this.listeners) l(frame)
     }

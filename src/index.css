@@ -1360,23 +1360,37 @@ button.round {
   pointer-events: none;
 }
 
-.hud-toggle {
+.layer-toggles {
   position: absolute;
   top: 8px;
   right: 8px;
+  display: flex;
+  gap: 6px;
+  z-index: 2;
+}
+
+.layer-toggles button,
+.deck-chip {
   min-height: 0;
-  padding: 3px 10px;
-  font: 600 0.75rem ui-monospace, SFMono-Regular, Menlo, monospace;
-  letter-spacing: 0.1em;
+  padding: 4px 10px;
+  font-size: 0.75rem;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.55);
   color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
-.hud-toggle.on {
-  color: #5ef2ff;
-  border-color: #5ef2ff;
-  box-shadow: 0 0 10px rgba(94, 242, 255, 0.5);
+.layer-toggles button.on {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
+.deck-chip {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  color: #fff;
 }
 
 /* Deck calibration */
