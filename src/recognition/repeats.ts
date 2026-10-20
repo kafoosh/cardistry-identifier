@@ -21,6 +21,30 @@ export interface RepeatResult {
   choice: number
 }
 
+/** Share of a repetition that must be actual motion. */
+const MIN_MOVING_SHARE = 0.6
+
+/**
+ * Frames where the hands are moving: smoothed feature speed above a share
+ * of this take's typical fast speed, so it adapts to how vigorous the move is.
+ */
+function movingMask(f: FeatureSequence): boolean[] {
+  const n = f.frames
+  const step = Array.from({ length: n }, (_, i) => (i + 1 < n ? dist(f, i, i + 1) : 0))
+  const sp = step.map((_, i) => {
+    let s = 0
+    let c = 0
+    for (let j = Math.max(0, i - 2); j <= Math.min(n - 2, i + 2); j++) {
+      s += step[j]
+      c++
+    }
+    return c ? s / c : 0
+  })
+  const sorted = [...sp].sort((a, b) => a - b)
+  const fast = sorted[Math.floor((sorted.length - 1) * 0.9)]
+  return sp.map((v) => v >= fast * 0.3 && v > 0)
+}
+
 function dist(f: FeatureSequence, i: number, j: number): number {
   const a = i * FEATURE_DIM
   const b = j * FEATURE_DIM
@@ -47,13 +71,19 @@ export function findRepeats(frames: Frame[], aspect: number, preferred?: number)
   const dt = f.durationMs / (n - 1)
   const t0 = frames[0].t
 
-  // Typical distance between unrelated frames, for scale.
+  // Only the moving parts count. Idle hands (or a pause) look like
+  // themselves at every lag, which would read as a perfect "repeat".
+  const moving = movingMask(f)
+  const movingIdx = moving.flatMap((m, i) => (m ? [i] : []))
+  if (movingIdx.length < 10) return null
+
+  // Typical distance between unrelated moving frames, for scale.
   let base = 0
   let count = 0
-  const stride = Math.max(1, Math.floor(n / 40))
-  for (let i = 0; i < n; i += stride) {
-    for (let j = i + stride * 3; j < n; j += stride) {
-      base += dist(f, i, j)
+  const stride = Math.max(1, Math.floor(movingIdx.length / 40))
+  for (let a = 0; a < movingIdx.length; a += stride) {
+    for (let b = a + stride * 3; b < movingIdx.length; b += stride) {
+      base += dist(f, movingIdx[a], movingIdx[b])
       count++
     }
   }
@@ -61,13 +91,19 @@ export function findRepeats(frames: Frame[], aspect: number, preferred?: number)
   base /= count
 
   const minLag = Math.max(2, Math.round(MIN_PERIOD_MS / dt))
-  const maxLag = Math.min(Math.round(MAX_PERIOD_MS / dt), Math.floor(n / 2))
+  const maxLag = Math.min(Math.round(MAX_PERIOD_MS / dt), Math.floor(movingIdx.length * 0.6))
   if (maxLag <= minLag) return null
   const ratios: number[] = []
   for (let lag = minLag; lag <= maxLag; lag++) {
-    let s = 0
-    for (let i = 0; i + lag < n; i++) s += dist(f, i, i + lag)
-    ratios.push(s / (n - lag) / base)
+    let sum = 0
+    let pairs = 0
+    for (let i = 0; i + lag < n; i++) {
+      if (!moving[i] || !moving[i + lag]) continue
+      sum += dist(f, i, i + lag)
+      pairs++
+    }
+    // A lag that mostly pairs motion with stillness isn't a repetition.
+    ratios.push(pairs >= movingIdx.length * 0.4 ? sum / pairs / base : Infinity)
   }
   // Candidate repetition lengths: each dip where the motion lines up with a
   // shifted copy of itself. The deepest dip is the starting point. Two or
@@ -81,7 +117,7 @@ export function findRepeats(frames: Frame[], aspect: number, preferred?: number)
       candidates.push({ lag: minLag + k, ratio: r })
   })
   if (!candidates.length) return null
-  const segmentsFor = (period: number) => cutsFor(f, base, period)
+  const segmentsFor = (period: number) => cutsFor(f, base, period, moving)
   const usable = candidates.map((c) => ({ ...c, cuts: segmentsFor(c.lag) })).filter((c) => c.cuts.length >= 3)
   if (!usable.length) return null
   let choice = usable.reduce((bi, c, i) => (c.ratio < usable[bi].ratio ? i : bi), 0)
@@ -110,8 +146,13 @@ export function findRepeats(frames: Frame[], aspect: number, preferred?: number)
 }
 
 /** Cut points (feature frame indices) for a given repetition length; fewer than 3 means under two whole repetitions. */
-function cutsFor(f: FeatureSequence, base: number, period: number): number[] {
+function cutsFor(f: FeatureSequence, base: number, period: number, moving: boolean[]): number[] {
   const n = f.frames
+  const movingShare = (a: number, b: number) => {
+    let m = 0
+    for (let i = a; i < b; i++) if (moving[i]) m++
+    return b > a ? m / (b - a) : 0
+  }
   // Try every starting pose in the first repetition and keep the one whose
   // chain of cuts is longest and most alike; ties go to stiller poses, since
   // cuts between repetitions are cleaner where the hands pause.
@@ -132,15 +173,19 @@ function cutsFor(f: FeatureSequence, base: number, period: number): number[] {
           bestJ = j
         }
       }
-      if (bestJ < 0 || bestD / base > 0.8) break
+      // Stop at a poor match, or where the hands stop doing the move.
+      if (bestJ < 0 || bestD / base > 0.8 || movingShare(prev, bestJ) < MIN_MOVING_SHARE) break
       cuts.push(bestJ)
       total += bestD
     }
     const score = cuts.length > 1 ? total / (cuts.length - 1) / base + (speed(anchor) / base) * 0.5 : Infinity
     return { cuts, score }
   }
-  let best_ = chain(0)
-  for (let a = 1; a < Math.min(period, n - 1); a++) {
+  // Any moving frame can start the chain: the move may begin after idle
+  // time or a fidget, so the first motion isn't necessarily the move.
+  let best_ = { cuts: [] as number[], score: Infinity }
+  for (let a = 0; a + period < n; a++) {
+    if (!moving[a]) continue
     const c = chain(a)
     if (c.cuts.length > best_.cuts.length || (c.cuts.length === best_.cuts.length && c.score < best_.score)) best_ = c
   }
