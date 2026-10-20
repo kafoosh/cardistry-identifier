@@ -1180,6 +1180,21 @@ button.round {
   min-height: 1.4em;
 }
 
+/* The record hint under the shutter always takes two lines, so the stage
+   doesn't grow and shrink as the hint changes between a take's steps. */
+.camera-bottom > .shutter-hint {
+  line-height: 1.45;
+  height: 2.9em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.camera-bottom > .shutter-hint[hidden] {
+  display: none;
+}
+
 .toast {
   position: absolute;
   left: 50%;
@@ -1374,7 +1389,9 @@ button.round {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-height: 1.2em;
+  /* A fixed line, so the boxes keep their height whether or not there's a guess. */
+  line-height: 1.45;
+  height: 1.45em;
 }
 
 .shutter-row.slim .round {
