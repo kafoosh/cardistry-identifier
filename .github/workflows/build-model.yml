@@ -23,13 +23,26 @@ jobs:
       API_BASE: https://cardistry-api.kennethaidanfoo.workers.dev
       ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Until the ADMIN_TOKEN repository secret exists there is nowhere to upload to; skip quietly rather than fail.
+      - name: Check the admin token
+        id: token
+        run: |
+          if [ -z "$ADMIN_TOKEN" ]; then
+            echo "Skipped: the ADMIN_TOKEN repository secret isn't set, so the model can't be uploaded." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.token.outputs.skip != 'true'
+        uses: actions/checkout@v4
+      - if: steps.token.outputs.skip != 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - if: steps.token.outputs.skip != 'true'
+        run: npm ci
       - name: Bundle the build script
+        if: steps.token.outputs.skip != 'true'
         run: npx rolldown scripts/build-model.ts --platform node --format esm --file build-model.mjs
       - name: Build and upload
+        if: steps.token.outputs.skip != 'true'
         run: node build-model.mjs ${{ github.event_name == 'schedule' && ' ' || '--force' }} | tee -a "$GITHUB_STEP_SUMMARY"
