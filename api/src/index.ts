@@ -308,6 +308,59 @@ async function getRecordingData(env: Env, id: string) {
   })
 }
 
+// ---------- matching model ----------
+
+/**
+ * Kept well under D1's per-value limit. The model is about 2.3 kB per take
+ * (126 kB for 56), so this holds a few hundred takes; past that it would
+ * need splitting into chunks.
+ */
+const MAX_MODEL_BYTES = 1_000_000
+
+async function modelVersion(env: Env) {
+  const row = await env.DB.prepare(`SELECT version FROM models WHERE id = 'current'`).first<{ version: string }>()
+  return row?.version ?? null
+}
+
+async function getModelVersion(env: Env) {
+  return json({ version: await modelVersion(env) }, 200, { 'Cache-Control': 'no-store' })
+}
+
+async function getModel(req: Request, env: Env) {
+  // The version is a tiny read each time; the model itself is edge-cached under its version, so a new model is
+  // served everywhere at once (purging only reaches the data centre that handled the upload).
+  const version = await modelVersion(env)
+  if (!version) throw new HttpError(404, 'No model yet')
+  const etag = `"${version}"`
+  // Revalidating each time costs a 304 while the model is unchanged.
+  const headers = { ETag: etag, 'Cache-Control': 'no-cache' }
+  if (req.headers.get('If-None-Match') === etag) return new Response(null, { status: 304, headers })
+  const bytes = await cachedBytes(`model:${version}`, 86_400, async () => {
+    const row = await env.DB.prepare(`SELECT gz FROM models WHERE id = 'current' AND version = ?1`)
+      .bind(version)
+      .first<{ gz: ArrayBuffer | number[] }>()
+    if (!row) throw new HttpError(404, 'No model yet')
+    return row.gz instanceof ArrayBuffer ? row.gz : new Uint8Array(row.gz).buffer
+  })
+  // Raw gzip bytes, like take data; the app decompresses with DecompressionStream.
+  return new Response(bytes, { headers: { ...headers, 'Content-Type': 'application/gzip' } })
+}
+
+async function putModel(req: Request, env: Env) {
+  const version = req.headers.get('X-Model-Version') ?? ''
+  if (!/^[0-9a-f]{8,64}$/.test(version)) throw new HttpError(400, 'Missing model version')
+  if (Number(req.headers.get('Content-Length') ?? 0) > MAX_MODEL_BYTES) throw new HttpError(413, 'Model too large')
+  const gz = await req.arrayBuffer()
+  if (!gz.byteLength || gz.byteLength > MAX_MODEL_BYTES) throw new HttpError(413, 'Model too large')
+  await env.DB.prepare(
+    `INSERT INTO models (id, version, gz, created_at) VALUES ('current', ?1, ?2, ?3)
+     ON CONFLICT (id) DO UPDATE SET version = excluded.version, gz = excluded.gz, created_at = excluded.created_at`,
+  )
+    .bind(version, gz, Date.now())
+    .run()
+  return json({ ok: true, version, bytes: gz.byteLength })
+}
+
 /** Finds a move by name, slug or alias (following merges), or proposes a new one. */
 async function resolveMove(env: Env, rawName: string, deviceId: string): Promise<MoveRow> {
   const name = cleanText(rawName, 60)
@@ -694,6 +747,8 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (req.method === 'GET' && path === '/api/library') return getLibrary(env, deviceId)
   if (req.method === 'GET' && (m = path.match(/^\/api\/moves\/([a-z0-9-]{1,60})$/))) return getMove(env, m[1], deviceId)
   if (req.method === 'GET' && (m = path.match(/^\/api\/recordings\/([0-9a-f-]{36})\/data$/))) return getRecordingData(env, m[1])
+  if (req.method === 'GET' && path === '/api/model') return getModel(req, env)
+  if (req.method === 'GET' && path === '/api/model/version') return getModelVersion(env)
   if (req.method === 'POST' && path === '/api/recordings') return uploadRecording(req, env)
   if (req.method === 'POST' && path === '/api/recordings/batch') return uploadBatch(req, env)
   if (req.method === 'DELETE' && (m = path.match(/^\/api\/recordings\/([0-9a-f-]{36})$/))) return deleteRecording(req, env, m[1])
@@ -701,6 +756,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     await requireAdmin(req, env)
     if (req.method === 'GET' && path === '/api/admin/overview') return adminOverview(env)
     if (req.method === 'PATCH' && path === '/api/admin/settings') return adminSettings(req, env)
+    if (req.method === 'PUT' && path === '/api/admin/model') return putModel(req, env)
     if (req.method === 'PATCH' && (m = path.match(/^\/api\/admin\/moves\/([0-9a-z-]{1,60})$/))) return adminMove(req, env, m[1])
     if ((req.method === 'PATCH' || req.method === 'DELETE') && (m = path.match(/^\/api\/admin\/recordings\/([0-9a-f-]{36})$/)))
       return adminRecording(req, env, m[1])

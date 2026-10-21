@@ -1,7 +1,7 @@
 import { chooseAnswer, MIN_STRENGTH } from './decide'
 import { subsequenceDtw } from './dtw'
 import { FEATURE_DIM, mirrorFeatures, type FeatureSequence } from './features'
-import { fitProjection, type Project } from './projection'
+import { fitBasis, projectWith, type Basis, type Project } from './projection'
 import { DEFAULT_THRESHOLD, type MoveScore, type Template } from './recognizer'
 import { applyWeights, fitWeights, IMPOSTORS, type Weights } from './weights'
 
@@ -72,8 +72,8 @@ const liveDistance = (q: FeatureSequence, qm: FeatureSequence, t: FeatureSequenc
   Math.min(subsequenceDtw(q, t).distance, subsequenceDtw(qm, t).distance)
 
 /** Projection fitted on the takes and their mirror images, so it covers moves done in either hand. */
-export const fitTakes = (templates: Template[]): Project =>
-  fitProjection(templates.flatMap((t) => [t.features, mirrorFeatures(t.features)]))
+export const fitTakes = (templates: Template[]): Basis | null =>
+  fitBasis(templates.flatMap((t) => [t.features, mirrorFeatures(t.features)]))
 
 /**
  * Live windows always have some time before the move in them; a trimmed
@@ -129,8 +129,9 @@ function median(xs: number[]) {
 
 export class TakeSet {
   readonly templates: Template[]
-  /** The projection matching uses. */
+  /** The projection matching uses, and the directions it projects onto. */
   readonly project: Project
+  readonly basis: Basis | null
   /** Per move: how much each projected value counts (missing: all count the same). */
   readonly weights = new Map<string, Weights>()
   private projected: FeatureSequence[]
@@ -145,7 +146,8 @@ export class TakeSet {
 
   constructor(templates: Template[], { weighted = true } = {}) {
     this.templates = templates
-    this.project = fitTakes(templates)
+    this.basis = fitTakes(templates)
+    this.project = projectWith(this.basis)
     this.projected = templates.map((t) => this.project(t.features))
     this.mirrored = templates.map((t) => this.project(mirrorFeatures(t.features)))
     templates.forEach((t, take) => {

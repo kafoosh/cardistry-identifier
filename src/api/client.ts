@@ -1,6 +1,7 @@
 import { API_BASE } from '../config'
 import { adminToken } from './admin'
 import type { LocalRecording } from '../recording/types'
+import { MODEL_FORMAT, type MatchModel } from '../recognition/model'
 import { decodeSequence, encodeSequence, type WireSequence } from '../shared/sequence'
 import type { Frame } from '../tracking/types'
 
@@ -119,6 +120,21 @@ export type LibraryRecording = SharedRecording & { moveName: string }
 /** The moves and every take Identify may match against, in one request. */
 export const fetchLibrary = () =>
   call<{ moves: SharedMove[]; recordings: LibraryRecording[] }>('/api/library', { cache: 'no-cache' })
+
+/**
+ * The library's prebuilt matching model (see recognition/model.ts), or null
+ * when the server has none yet or it was built for another version of the
+ * matcher.
+ */
+export async function fetchModel(): Promise<MatchModel | null> {
+  // Revalidates each time, so an unchanged model costs a 304.
+  const res = await fetch(`${API_BASE}/api/model`, { cache: 'no-cache' })
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Couldn't load the library model (${res.status})`)
+  const stream = res.body!.pipeThrough(new DecompressionStream('gzip'))
+  const model = (await new Response(stream).json()) as MatchModel
+  return model.format === MODEL_FORMAT ? model : null
+}
 
 const frameCache = new Map<string, Promise<Frame[]>>()
 

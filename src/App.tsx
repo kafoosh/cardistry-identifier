@@ -16,7 +16,7 @@ import { Identifier, type IdentifyState } from './recognition/identifier'
 import { activeSpan } from './recognition/motion'
 import { MotionWatcher } from './recognition/motionWatcher'
 import { getMatcher } from './recognition/shared'
-import { loadTemplates } from './recognition/templates'
+import { loadMatcher, type LoadedMatcher } from './recognition/templates'
 import {
   canRecordVideo,
   describeDevice,
@@ -480,19 +480,22 @@ export default function App() {
     let cancelled = false
     setIdentify(null)
     void (async () => {
-      const { templates, sharedError } = await loadTemplates()
-      if (cancelled || !loopRef.current) return
       const matcher = getMatcher()
-      const outliers = new Set(await matcher.setTemplates(templates))
-      const used = templates.filter((t) => !outliers.has(t.id))
-      setTemplateInfo({
-        templates: used.length,
-        moves: new Set(used.map((t) => t.moveName)).size,
-        shared: used.filter((t) => t.source === 'shared').length,
-        sharedError,
+      const show = ({ templates, outliers, sharedError }: LoadedMatcher) => {
+        const used = templates.filter((t) => !outliers.has(t.id))
+        setTemplateInfo({
+          templates: used.length,
+          moves: new Set(used.map((t) => t.moveName)).size,
+          shared: used.filter((t) => t.source === 'shared').length,
+          sharedError,
+        })
+        thresholdRef.current.base = matcher.threshold
+      }
+      const { templates, ...rest } = await loadMatcher(matcher, (upgraded) => {
+        if (!cancelled) show(upgraded)
       })
-      thresholdRef.current.base = matcher.threshold
       if (cancelled || !loopRef.current) return
+      show({ templates, ...rest })
       if (!watcherRef.current) return
       identifier = new Identifier(
         loopRef.current,
