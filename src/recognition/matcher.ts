@@ -1,5 +1,6 @@
 import type { MatcherRequest, MatchQuery, MatchResult } from './matcher.worker'
 import type { SelfTestResult } from './calibration'
+import type { MatchModel } from './model'
 import type { Template } from './recognizer'
 
 /** Runs DTW matching in a Web Worker so tracking and the UI stay smooth. */
@@ -19,6 +20,7 @@ export class Matcher {
         result?: SelfTestResult
         outliers?: string[]
         threshold?: number
+        model?: MatchModel
       }>,
     ) => {
       const resolve = this.pending.get(e.data.id)
@@ -41,6 +43,28 @@ export class Matcher {
         resolve(d.outliers)
       })
       this.post({ type: 'templates', id, templates })
+    })
+  }
+
+  /** Loads a prebuilt model (see model.ts); resolves with the ids of its outlier takes. */
+  setModel(model: MatchModel): Promise<string[]> {
+    const id = this.nextId++
+    return new Promise((resolve) => {
+      this.pending.set(id, (v) => {
+        const d = v as { outliers: string[]; threshold: number }
+        this.threshold = d.threshold
+        resolve(d.outliers)
+      })
+      this.post({ type: 'model', id, model })
+    })
+  }
+
+  /** Builds a model from takes without loading it. Run it on a separate matcher so live matching isn't held up. */
+  build(templates: Template[]): Promise<MatchModel> {
+    const id = this.nextId++
+    return new Promise((resolve) => {
+      this.pending.set(id, (v) => resolve((v as { model: MatchModel }).model))
+      this.post({ type: 'build', id, templates })
     })
   }
 

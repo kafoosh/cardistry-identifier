@@ -19,6 +19,12 @@ const MAX_SAMPLES = 6000
 
 export const identity: Project = (seq) => seq
 
+/** The directions kept: `kept` rows of HAND_DIM values each. */
+export interface Basis {
+  vectors: Float32Array
+  kept: number
+}
+
 /** Eigen-decomposition of a symmetric matrix (cyclic Jacobi). Returns eigenvalues and eigenvectors as rows. */
 function symmetricEigen(a: Float64Array, n: number): { values: Float64Array; vectors: Float64Array } {
   const v = new Float64Array(n * n)
@@ -62,13 +68,13 @@ function symmetricEigen(a: Float64Array, n: number): { values: Float64Array; vec
 }
 
 /**
- * Fits the projection on the given sequences (mirrored copies included by
- * the caller, so either hand is covered). Falls back to no projection when
- * there is too little data to fit.
+ * Fits the projection's directions on the given sequences (mirrored copies
+ * included by the caller, so either hand is covered). Null when there is too
+ * little data to fit, meaning no projection.
  */
-export function fitProjection(seqs: FeatureSequence[]): Project {
+export function fitBasis(seqs: FeatureSequence[]): Basis | null {
   const total = seqs.reduce((s, q) => s + q.frames, 0)
-  if (total < HAND_DIM * 2) return identity
+  if (total < HAND_DIM * 2) return null
   const step = Math.max(1, Math.ceil(total / MAX_SAMPLES))
   const n = HAND_DIM
   const mean = new Float64Array(n)
@@ -98,13 +104,21 @@ export function fitProjection(seqs: FeatureSequence[]): Project {
   const { values, vectors } = symmetricEigen(cov, n)
   const order = [...values.keys()].sort((a, b) => values[b] - values[a])
   const sum = values.reduce((s, x) => s + Math.max(0, x), 0)
-  if (sum <= 0) return identity
+  if (sum <= 0) return null
   let kept = 0
   let acc = 0
   while (kept < MAX_COMPONENTS && (kept < MIN_COMPONENTS || acc < sum * VARIANCE_KEPT))
     acc += Math.max(0, values[order[kept++]])
   const basis = new Float32Array(kept * n)
   order.slice(0, kept).forEach((r, c) => basis.set(vectors.subarray(r * n, r * n + n), c * n))
+  return { vectors: basis, kept }
+}
+
+/** The projection onto a fitted basis (no projection for null). */
+export function projectWith(fit: Basis | null): Project {
+  if (!fit) return identity
+  const { vectors: basis, kept } = fit
+  const n = HAND_DIM
   const dim = kept + CARD_DIM
 
   return (seq) => {

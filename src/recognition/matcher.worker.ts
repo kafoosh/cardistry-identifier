@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 import { TakeSet, type Calibration } from './calibration'
+import { buildModel, loadModel, type MatchModel } from './model'
 import { identity, type Project } from './projection'
 import { matchLive, type MoveScore, type Template } from './recognizer'
 import type { FeatureSequence } from './features'
@@ -20,6 +21,8 @@ export interface MatchResult {
 
 export type MatcherRequest =
   | { type: 'templates'; id: number; templates: Template[] }
+  | { type: 'build'; id: number; templates: Template[] }
+  | { type: 'model'; id: number; model: MatchModel }
   | { type: 'match'; id: number; query: MatchQuery; threshold: number }
   | { type: 'selftest'; id: number }
 
@@ -27,23 +30,36 @@ let takes: TakeSet | null = null
 let templates: Template[] = []
 let calibration: Calibration = { scale: new Map(), global: 1 }
 let project: Project = identity
-const weigh = (seq: FeatureSequence, move: string) => takes?.encode(seq, move) ?? seq
+let weigh = (seq: FeatureSequence, move: string) => takes?.encode(seq, move) ?? seq
 
 self.onmessage = (e: MessageEvent<MatcherRequest>) => {
   const msg = e.data
   if (msg.type === 'templates') {
     // Takes that don't look like the rest of their move are left out of
     // matching, and each move's acceptance limit is learned from the rest.
-    takes = new TakeSet(msg.templates)
-    templates = takes.kept
-    project = takes.project
-    calibration = takes.calibrate()
+    const set = new TakeSet(msg.templates)
+    takes = set
+    templates = set.kept
+    project = set.project
+    calibration = set.calibrate()
+    weigh = (seq, move) => set.encode(seq, move)
     self.postMessage({
       type: 'templates',
       id: msg.id,
-      outliers: [...takes.outliers].map((i) => msg.templates[i].id),
+      outliers: [...set.outliers].map((i) => msg.templates[i].id),
       threshold: calibration.global,
     })
+  } else if (msg.type === 'build') {
+    // Only builds: the result is loaded into the matcher that runs live, so matching never waits on a build.
+    self.postMessage({ type: 'build', id: msg.id, model: buildModel(msg.templates) })
+  } else if (msg.type === 'model') {
+    const loaded = loadModel(msg.model)
+    takes = null
+    templates = loaded.templates
+    project = loaded.project
+    calibration = loaded.calibration
+    weigh = loaded.weigh
+    self.postMessage({ type: 'model', id: msg.id, outliers: msg.model.outliers, threshold: calibration.global })
   } else if (msg.type === 'match') {
     const t0 = performance.now()
     // The threshold sent is the global one times the sensitivity setting; apply the same sensitivity to each move's own scale.

@@ -1,0 +1,35 @@
+name: Build the library's matching model
+
+# Identify downloads this one prebuilt model instead of every take (see
+# src/recognition/model.ts). The scheduled run only rebuilds when the
+# library's approved takes changed; a change to the matching code rebuilds
+# it regardless.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  push:
+    branches: [main]
+    paths: ['src/recognition/**', 'src/recording/activeHands.ts', 'src/shared/**', 'scripts/build-model.ts']
+  workflow_dispatch:
+
+concurrency:
+  group: build-model
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      API_BASE: https://cardistry-api.kennethaidanfoo.workers.dev
+      ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Bundle the build script
+        run: npx rolldown scripts/build-model.ts --platform node --format esm --file build-model.mjs
+      - name: Build and upload
+        run: node build-model.mjs ${{ github.event_name == 'schedule' && ' ' || '--force' }} | tee -a "$GITHUB_STEP_SUMMARY"

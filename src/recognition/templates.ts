@@ -1,47 +1,33 @@
-import { fetchLibrary, fetchRecordingFrames } from '../api/client'
+import { fetchLibrary, fetchModel, fetchRecordingFrames } from '../api/client'
 import { sharingEnabled } from '../config'
 import { listRecordings, loadRecording } from '../storage/db'
-import { detectActiveHands, keepHands } from '../recording/activeHands'
-import type { Frame } from '../tracking/types'
-import { extractFeatures } from './features'
+import { Matcher } from './matcher'
+import { loadModel } from './model'
+import { templateFeatures } from './templateFeatures'
 import type { Template } from './recognizer'
 
-/**
- * Features for a take, and whether it is a one-hand or two-hand move. A
- * one-hand take is encoded from its moving hand alone; matching tries the
- * mirror image too, so it can match that move done in either hand. The take
- * is also encoded the way Identify's other kind of matching would see it
- * (see Template.alt).
- */
-export function templateFeatures(frames: Frame[], aspect: number): Pick<Template, 'features' | 'hands' | 'alt'> | null {
-  const activity = detectActiveHands(frames)
-  const active = activity.filter((h) => h.active && h.presence >= 0.3)
-  const hands = active.length >= 2 ? 2 : 1
-  const alone = (slot: 0 | 1) => extractFeatures(keepHands(frames, new Set([slot])), aspect, slot)
-  const features = hands === 2 || !active.length ? extractFeatures(frames, aspect) : alone(active[0].slot)
-  if (!features || features.frames < 4) return null
-  const alt =
-    hands === 2
-      ? active.map((h) => alone(h.slot))
-      : activity.filter((h) => h.presence >= 0.3).length === 2
-        ? [extractFeatures(frames, aspect)]
-        : []
-  return { features, hands, alt: alt.filter((f): f is NonNullable<typeof f> => f !== null && f.frames >= 4) }
-}
-
 /** Builds matching templates from the recordings saved on this device. */
-export async function loadLocalTemplates(): Promise<{ templates: Template[]; sharedIds: Set<string> }> {
+export async function loadLocalTemplates(): Promise<{
+  templates: Template[]
+  sharedIds: Set<string>
+  /** Per local template: the id of its shared copy, when it was shared. */
+  sharedIdOf: Map<string, string>
+}> {
   const summaries = await listRecordings()
   const out: Template[] = []
   const sharedIds = new Set<string>()
+  const sharedIdOf = new Map<string, string>()
   for (const s of summaries) {
     const rec = await loadRecording(s.id)
     if (!rec) continue
-    if (rec.sharedId) sharedIds.add(rec.sharedId)
+    if (rec.sharedId) {
+      sharedIds.add(rec.sharedId)
+      sharedIdOf.set(rec.id, rec.sharedId)
+    }
     const f = templateFeatures(rec.frames, rec.videoWidth / rec.videoHeight || 4 / 3)
     if (f) out.push({ id: rec.id, moveName: rec.moveName, ...f, source: 'mine' })
   }
-  return { templates: out, sharedIds }
+  return { templates: out, sharedIds, sharedIdOf }
 }
 
 /** Templates from the shared library: approved takes plus this browser's own pending ones. */
@@ -78,4 +64,57 @@ export async function loadTemplates(): Promise<{ templates: Template[]; sharedEr
   } catch {
     return { templates: local.templates, sharedError: true }
   }
+}
+
+export interface LoadedMatcher {
+  /** The templates matched against (outliers included). */
+  templates: Template[]
+  outliers: Set<string>
+  sharedError: boolean
+}
+
+/**
+ * Gets the matcher ready for Identify. When the library has a prebuilt model
+ * that covers everything this device would match against, that is all it
+ * loads: one small download, ready at once. When this device has takes the
+ * model lacks (its own unshared ones, or ones shared since the model was
+ * built), Identify starts on the model and the full set is built in the
+ * background, on a separate worker so live matching carries on; `onUpgrade`
+ * hears when it is swapped in.
+ */
+export async function loadMatcher(matcher: Matcher, onUpgrade: (l: LoadedMatcher) => void): Promise<LoadedMatcher> {
+  const full = async (): Promise<LoadedMatcher> => {
+    const { templates, sharedError } = await loadTemplates()
+    return { templates, outliers: new Set(await matcher.setTemplates(templates)), sharedError }
+  }
+  if (!sharingEnabled()) return full()
+  const [local, model, library] = await Promise.all([
+    loadLocalTemplates(),
+    fetchModel().catch(() => null),
+    fetchLibrary().catch(() => null),
+  ])
+  if (!model) return full()
+
+  const outliers = new Set(await matcher.setModel(model))
+  const loaded: LoadedMatcher = { templates: loadModel(model).templates, outliers, sharedError: !library }
+  const inModel = new Set(model.takeIds)
+  const shared = (id: string) => inModel.has(`shared:${id}`)
+  const missing =
+    local.templates.some((t) => !shared(local.sharedIdOf.get(t.id) ?? '')) ||
+    (library?.recordings.some((r) => !shared(r.id)) ?? false)
+  if (missing)
+    void (async () => {
+      const { templates, sharedError } = await loadTemplates()
+      const builder = new Matcher()
+      try {
+        const rebuilt = await builder.build(templates)
+        const ids = new Set(await matcher.setModel(rebuilt))
+        onUpgrade({ templates, outliers: ids, sharedError })
+      } finally {
+        builder.terminate()
+      }
+    })().catch(() => {
+      // Keep matching on the library's model.
+    })
+  return loaded
 }
