@@ -88,7 +88,11 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     // The admin token, when this browser has one, lifts the per-move share cap.
-    headers: { 'X-Device-Id': deviceId(), ...(adminToken() ? { 'X-Admin-Token': adminToken() } : {}), ...(init.headers ?? {}) },
+    headers: {
+      'X-Device-Id': deviceId(),
+      ...(adminToken() ? { 'X-Admin-Token': adminToken() } : {}),
+      ...(init.headers ?? {}),
+    },
   })
   if (!res.ok) {
     let message = `Request failed (${res.status})`
@@ -106,7 +110,9 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const fetchMoves = () => call<{ moves: SharedMove[] }>('/api/moves', { cache: 'no-cache' }).then((r) => r.moves)
 
 export const fetchMove = (slug: string) =>
-  call<{ move: SharedMove; recordings: SharedRecording[] }>(`/api/moves/${encodeURIComponent(slug)}`, { cache: 'no-cache' })
+  call<{ move: SharedMove; recordings: SharedRecording[] }>(`/api/moves/${encodeURIComponent(slug)}`, {
+    cache: 'no-cache',
+  })
 
 export type LibraryRecording = SharedRecording & { moveName: string }
 
@@ -160,14 +166,19 @@ function uploadItem(rec: LocalRecording) {
 
 /** Only the uploader's browser keeps delete keys; the server stores their hashes. */
 function rememberDeleteKeys(pairs: [string, string][]) {
-  if (pairs.length) storageSet('cardistry.deleteKeys', JSON.stringify({ ...deleteKeys(), ...Object.fromEntries(pairs) }))
+  if (pairs.length)
+    storageSet('cardistry.deleteKeys', JSON.stringify({ ...deleteKeys(), ...Object.fromEntries(pairs) }))
 }
 
 type Uploaded = UploadResult & { deleteKey?: string }
 
 const stripKey = ({ deleteKey: _key, ...rest }: Uploaded): UploadResult => rest
 
-export async function uploadRecording(rec: LocalRecording, nickname: string, turnstileToken: string): Promise<UploadResult> {
+export async function uploadRecording(
+  rec: LocalRecording,
+  nickname: string,
+  turnstileToken: string,
+): Promise<UploadResult> {
   const out = await call<Uploaded>('/api/recordings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -180,12 +191,24 @@ export async function uploadRecording(rec: LocalRecording, nickname: string, tur
 export const MAX_BATCH = 20
 
 /** Shares up to MAX_BATCH recordings behind one captcha token. Results line up with the input. */
-export async function uploadBatch(recs: LocalRecording[], nickname: string, turnstileToken: string): Promise<BatchItemResult[]> {
-  const out = await call<{ results: (({ ok: true } & Uploaded) | { ok: false; error: string; code?: string })[] }>('/api/recordings/batch', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ turnstileToken, deviceId: deviceId(), nickname: nickname || undefined, items: recs.map(uploadItem) }),
-  })
+export async function uploadBatch(
+  recs: LocalRecording[],
+  nickname: string,
+  turnstileToken: string,
+): Promise<BatchItemResult[]> {
+  const out = await call<{ results: (({ ok: true } & Uploaded) | { ok: false; error: string; code?: string })[] }>(
+    '/api/recordings/batch',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        turnstileToken,
+        deviceId: deviceId(),
+        nickname: nickname || undefined,
+        items: recs.map(uploadItem),
+      }),
+    },
+  )
   rememberDeleteKeys(out.results.flatMap((r) => (r.ok && r.deleteKey ? [[r.id, r.deleteKey] as [string, string]] : [])))
   // The server stops early when the daily limit is hit; mark the rest as not sent.
   return recs.map((_, i) => {
