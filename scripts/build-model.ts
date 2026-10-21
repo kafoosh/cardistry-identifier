@@ -15,7 +15,12 @@ import type { Frame } from '../src/tracking/types'
 
 const API = (process.env.API_BASE ?? '').replace(/\/+$/, '')
 const TOKEN = process.env.ADMIN_TOKEN ?? ''
-if (!API || !TOKEN) throw new Error('API_BASE and ADMIN_TOKEN are required')
+if (!API) throw new Error('API_BASE is required')
+if (!TOKEN) {
+  // The ADMIN_TOKEN repo secret is not set yet; nothing can be uploaded, and that is not a failure here.
+  console.log('ADMIN_TOKEN is not set, so no model was built. Add the repository secret to enable this.')
+  process.exit(0)
+}
 const force = process.argv.includes('--force')
 
 interface LibraryRecording {
@@ -73,6 +78,11 @@ const res = await fetch(`${API}/api/admin/model`, {
   headers: { 'X-Admin-Token': TOKEN, 'X-Model-Version': version, 'Content-Type': 'application/gzip' },
   body: gz,
 })
+if (res.status === 503) {
+  // The Worker has not received the admin token yet (it is handed over by the next API deploy).
+  console.log(`Model built (${Math.round(gz.length / 1024)} kB) but not uploaded: ${await res.text()}`)
+  process.exit(0)
+}
 if (!res.ok) throw new Error(`Upload failed: ${res.status} ${await res.text()}`)
 const moves = new Set(model.templates.map((t) => t.moveName)).size
 console.log(
