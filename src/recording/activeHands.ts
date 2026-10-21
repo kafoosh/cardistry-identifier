@@ -32,6 +32,8 @@ const dist = (a: Point3, b: Point3) => Math.hypot(a[0] - b[0], a[1] - b[1])
  */
 export function detectActiveHands(frames: Frame[]): HandActivity[] {
   const out: HandActivity[] = []
+  /** Share of each slot's frames labelled Left. */
+  const shares: number[] = []
   for (const slot of [0, 1] as const) {
     let present = 0
     let travel = 0
@@ -55,6 +57,7 @@ export function detectActiveHands(frames: Frame[]): HandActivity[] {
       }
       prev = { t: f.t, lm: h.landmarks }
     }
+    shares.push(present ? labels.Left / present : 0.5)
     out.push({
       slot,
       handedness: present ? (labels.Left >= labels.Right ? 'Left' : 'Right') : null,
@@ -62,6 +65,14 @@ export function detectActiveHands(frames: Frame[]): HandActivity[] {
       motion: time > 0 ? travel / time : 0,
       active: present > 0,
     })
+  }
+  // A person has one hand of each: if both slots came out with the same
+  // label, the slot whose label was less consistent takes the other one.
+  const [a, b] = out
+  if (a.handedness && a.handedness === b.handedness) {
+    const lean = (i: number) => Math.abs(shares[i] - 0.5)
+    const flip = lean(0) < lean(1) ? a : b
+    flip.handedness = flip.handedness === 'Left' ? 'Right' : 'Left'
   }
   const reliable = out.filter((h) => h.presence >= RELIABLE_PRESENCE)
   const busiest = Math.max(...(reliable.length ? reliable : out).map((h) => h.motion))
