@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { readNick, rememberNick } from '../api/client'
 import { detectActiveHands, keepHands } from '../recording/activeHands'
-import { longestGapMs, qualityScore, type Capture } from '../recording/recorder'
+import type { Capture } from '../recording/recorder'
 import { sliceFrames } from '../recognition/motion'
 import { SLOT_COLOURS } from '../tracking/draw'
 import type { Frame } from '../tracking/types'
@@ -67,8 +67,6 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
   useEffect(() => () => void (videoUrl && URL.revokeObjectURL(videoUrl)), [videoUrl])
 
   const tooShort = frames.length < 10
-  const quality = useMemo(() => qualityScore(frames), [frames])
-  const gap = useMemo(() => longestGapMs(frames), [frames])
   const canSave = Boolean(moveName.trim()) && !tooShort && kept.size > 0
 
   const toggleHand = (slot: 0 | 1) =>
@@ -158,18 +156,10 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
             replay.current?.seek(moved === 'start' ? next.startMs : next.endMs)
           }}
         />
-        <p className="small muted">
-          {(durationMs / 1000).toFixed(1)}s kept of {(fullMs / 1000).toFixed(1)}s · {frames.length} frames
-          {' · '}hands tracked {(quality * 100).toFixed(0)}%
-          {gap > 0 ? ` · longest drop ${(gap / 1000).toFixed(2)}s` : ' · no drops'}
-          {capture.video ? ' · video clip captured' : ''}
-        </p>
-        {tooShort && <p className="hint">This take is very short. Widen the trim, or try again and hold the move for longer.</p>}
+        {tooShort && <p className="hint">Too short to save. Widen the trim.</p>}
 
         {activity.some((h) => h.presence > 0) && (
-          <div className="field">
-            <span>Hands in this move (idle hands are left out)</span>
-            <div className="hand-chips">
+          <div className="hand-chips" aria-label="Hands in this take">
               {activity
                 .filter((h) => h.presence > 0)
                 .map((h) => (
@@ -181,17 +171,16 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
                   >
                     <span className="dot" style={{ background: SLOT_COLOURS[h.slot] }} />
                     {h.handedness ?? `Hand ${h.slot ? 'B' : 'A'}`} hand
-                    <span className="muted small">{kept.has(h.slot) ? (h.active ? 'moving' : 'kept') : 'idle, left out'}</span>
+                    {!kept.has(h.slot) && <span className="muted small">left out</span>}
                   </button>
                 ))}
-            </div>
           </div>
         )}
 
         {capture.video && (
           <label className="check">
             <input type="checkbox" checked={keepVideo} onChange={(e) => setKeepVideo(e.target.checked)} />
-            Keep the video clip on this device
+            Keep the video on this phone
           </label>
         )}
 
@@ -202,8 +191,8 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
               Share to the library
             </label>
             {share && (
-              <p className="small muted">
-                Public: the hand wireframe and card outlines, never video. Shared as{' '}
+              <span className="small muted">
+                as{' '}
                 {editingNick ? (
                   <input
                     className="nick"
@@ -219,12 +208,12 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
                     {nickname.trim() || 'Anonymous'}
                   </button>
                 )}
-              </p>
+              </span>
             )}
-            {share && <Turnstile onToken={setToken} onError={setShareError} />}
-            {share && shareError && <p className="small error">{shareError} Saving keeps it on this device.</p>}
           </div>
         )}
+        {sharing && <Turnstile onToken={setToken} onError={setShareError} quiet />}
+        {sharing && shareError && <p className="small error">{shareError} Saving keeps it on this phone.</p>}
 
         <div className="sheet-actions">
           <button onClick={onDiscard} disabled={waiting !== null}>
