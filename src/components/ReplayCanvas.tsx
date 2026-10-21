@@ -72,8 +72,16 @@ export function ReplayCanvas({ frames, width, height, mirror, videoUrl, videoSta
     if (!playing) return
     let raf = 0
     let last = performance.now()
+    // Run on the clock until the clip is actually playing (it can take a moment
+    // to load on a phone), then line the clip up with the wireframe and follow it.
+    let following = false
     const step = (now: number) => {
-      if (video && videoUrl) {
+      if (video && videoUrl && !following && video.readyState >= 3 && !video.paused) {
+        following = true
+        const at = Math.max(0, (timeRef.current - videoStartMs) / 1000)
+        if (Math.abs(video.currentTime - at) > 0.1) video.currentTime = at
+      }
+      if (video && videoUrl && following) {
         timeRef.current = video.currentTime * 1000 + videoStartMs
         if (timeRef.current > loopEnd || timeRef.current < loopStart - 100) {
           timeRef.current = loopStart

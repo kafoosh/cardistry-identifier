@@ -24,6 +24,7 @@ export class TrackingLoop {
   private identity = new HandIdentity()
   private listeners = new Set<FrameListener>()
   private running = false
+  private paused = false
   private handle = 0
   private startTime = 0
   private lastVideoTime = -1
@@ -64,13 +65,29 @@ export class TrackingLoop {
     this.ctx.clearRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height)
   }
 
+  /** Stops running the model but keeps hand slots, e.g. while the take review covers the preview. */
+  pause() {
+    if (!this.running || this.paused) return
+    this.paused = true
+    if (this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.handle)
+    else cancelAnimationFrame(this.handle)
+  }
+
+  resume() {
+    if (!this.paused) return
+    this.paused = false
+    // The gap would read as a slow frame rate.
+    this.stats.reset()
+    this.schedule()
+  }
+
   onFrame(listener: FrameListener): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
   }
 
   private schedule() {
-    if (!this.running) return
+    if (!this.running || this.paused) return
     if (this.video.requestVideoFrameCallback) {
       this.handle = this.video.requestVideoFrameCallback(() => this.tick())
     } else {
@@ -79,7 +96,7 @@ export class TrackingLoop {
   }
 
   private tick() {
-    if (!this.running) return
+    if (!this.running || this.paused) return
     const v = this.video
     if (v.readyState >= 2 && v.videoWidth > 0 && v.currentTime !== this.lastVideoTime) {
       this.lastVideoTime = v.currentTime

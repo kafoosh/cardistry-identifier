@@ -282,6 +282,16 @@ export default function App() {
     }
   }, [phase])
 
+  // The take review covers the preview, so stop running the model behind it:
+  // on a phone it would take the time the replay needs to play smoothly.
+  const reviewing = Boolean(capture) && recState === 'review'
+  useEffect(() => {
+    const loop = loopRef.current
+    if (!reviewing || phase !== 'live' || !loop) return
+    loop.pause()
+    return () => loop.resume()
+  }, [reviewing, phase])
+
   // Fill Settings in straight away rather than on the next tick.
   useEffect(() => {
     if (showSettings && loopRef.current) setStats(loopRef.current.stats.read())
