@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { findExisting, loadMoveCandidates, suggestMoves, type MoveCandidate } from '../recording/moveNames'
 
 interface Props {
@@ -24,6 +24,7 @@ export function MovePicker({ value, onChange, autoFocus }: Props) {
   const [text, setText] = useState(value)
   const [open, setOpen] = useState(false)
   const listId = useId()
+  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     void loadMoveCandidates().then(setCandidates)
@@ -48,6 +49,7 @@ export function MovePicker({ value, onChange, autoFocus }: Props) {
   return (
     <div className="move-picker">
       <input
+        ref={inputRef}
         value={text}
         placeholder="Type a move, e.g. Sybil"
         autoFocus={autoFocus}
@@ -74,6 +76,23 @@ export function MovePicker({ value, onChange, autoFocus }: Props) {
           }
         }}
       />
+      {text && (
+        <button
+          type="button"
+          className="move-clear"
+          aria-label="Clear the move name"
+          // Keep focus in the field, so clearing doesn't commit the old name on blur.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            setText('')
+            onChange('')
+            setOpen(true)
+            inputRef.current?.focus()
+          }}
+        >
+          ×
+        </button>
+      )}
       {open && (suggestions.length > 0 || trimmed) && (
         <ul className="suggestions" id={listId} role="listbox">
           {suggestions.map((c) => (

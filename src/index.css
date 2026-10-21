@@ -646,18 +646,84 @@ textarea {
   min-height: 0;
 }
 
-/* Share-on-save in the take review: a tick, one line on what goes public, and the nickname. */
-.share-on-save .check {
-  margin-bottom: 2px;
-}
-
-.share-on-save p {
-  margin: 0 0 0 26px;
+/* Share-on-save in the take review: one row with the tick and the nickname. */
+.share-on-save {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 6px;
 }
 
 .share-on-save input.nick {
-  width: 12em;
+  width: 10em;
   padding: 2px 6px;
+}
+
+/* The take review fits a phone screen: a shorter replay, tighter rows, and the
+   save buttons pinned to the bottom of the sheet so they never need a scroll. */
+.sheet[aria-label='Save recording'] {
+  padding-bottom: 0;
+}
+
+.sheet[aria-label='Save recording'] .replay-stage {
+  max-height: 36svh;
+}
+
+.sheet[aria-label='Save recording'] .replay-controls {
+  flex-wrap: nowrap;
+  margin-top: 6px;
+}
+
+.sheet[aria-label='Save recording'] .replay-controls input[type='range'] {
+  min-width: 60px;
+}
+
+.sheet[aria-label='Save recording'] .replay-controls button,
+.sheet[aria-label='Save recording'] .speed button {
+  min-height: 34px;
+  padding: 4px 8px;
+}
+
+.sheet[aria-label='Save recording'] .check {
+  margin: 4px 0;
+}
+
+.sheet[aria-label='Save recording'] .hand-chips {
+  margin-top: 8px;
+}
+
+.sheet[aria-label='Save recording'] .sheet-actions {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  margin-top: 8px;
+  padding: 8px 0 calc(12px + env(safe-area-inset-bottom));
+  flex-wrap: nowrap;
+}
+
+.sheet[aria-label='Save recording'] .sheet-title h2 {
+  margin-bottom: 6px;
+}
+
+.move-picker:has(.move-clear) input {
+  padding-right: 40px;
+}
+
+.move-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 36px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  font-size: 1.3rem;
+  line-height: 1;
 }
 
 .move-list {
@@ -1557,4 +1623,8 @@ button.danger-link {
 
 .admin-login .field {
   width: 100%;
+}
+
+.sheet[aria-label='Save recording'] .replay-controls .tabular {
+  white-space: nowrap;
 }

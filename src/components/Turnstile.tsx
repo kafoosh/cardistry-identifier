@@ -34,7 +34,16 @@ function loadScript(): Promise<TurnstileApi> {
  * with a fresh token, or with '' straight away when no site key is set
  * (local dev, where the API skips the check).
  */
-export function Turnstile({ onToken, onError }: { onToken: (token: string | null) => void; onError: (msg: string) => void }) {
+export function Turnstile({
+  onToken,
+  onError,
+  quiet = false,
+}: {
+  onToken: (token: string | null) => void
+  onError: (msg: string) => void
+  /** Take no room unless the check needs the person to tap it. */
+  quiet?: boolean
+}) {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -51,6 +60,7 @@ export function Turnstile({ onToken, onError }: { onToken: (token: string | null
           sitekey: TURNSTILE_SITEKEY,
           theme: 'dark',
           size: 'flexible',
+          ...(quiet ? { appearance: 'interaction-only' } : {}),
           callback: onToken,
           'expired-callback': () => onToken(null),
           'error-callback': () => onError('The spam check failed. Reload the page and try again.'),
