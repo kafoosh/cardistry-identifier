@@ -102,6 +102,60 @@ async function rateLimit(env: Env, keys: string[], limit: number) {
   }
 }
 
+// ---------- edge cache ----------
+// Read-mostly answers are kept in Cloudflare's edge cache, so a crowd of readers
+// does not become a crowd of database queries. Keys are made-up URLs nobody can
+// request from outside. The cache is per data centre, so after a write other
+// places may see the old answer for up to the TTL.
+
+const CACHE_ORIGIN = 'https://cache.cardistry.invalid/'
+const edgeCache = () => (globalThis as { caches?: { default?: Cache } }).caches?.default
+const cacheKey = (key: string) => new Request(CACHE_ORIGIN + key)
+
+async function cachedJson<T>(key: string, ttlSeconds: number, build: () => Promise<T>): Promise<T> {
+  const cache = edgeCache()
+  if (cache) {
+    const hit = await cache.match(cacheKey(key))
+    if (hit) return hit.json() as Promise<T>
+  }
+  const value = await build()
+  if (cache) {
+    await cache.put(
+      cacheKey(key),
+      new Response(JSON.stringify(value), { headers: { 'Cache-Control': `public, max-age=${ttlSeconds}` } }),
+    )
+  }
+  return value
+}
+
+async function cachedBytes(key: string, ttlSeconds: number, build: () => Promise<ArrayBuffer>): Promise<ArrayBuffer> {
+  const cache = edgeCache()
+  if (cache) {
+    const hit = await cache.match(cacheKey(key))
+    if (hit) return hit.arrayBuffer()
+  }
+  const bytes = await build()
+  if (cache) await cache.put(cacheKey(key), new Response(bytes, { headers: { 'Cache-Control': `public, max-age=${ttlSeconds}` } }))
+  return bytes
+}
+
+async function forget(...keys: string[]) {
+  const cache = edgeCache()
+  if (!cache) return
+  await Promise.all(keys.map((k) => cache.delete(cacheKey(k))))
+}
+
+/** Drops every cached answer that mentions a move (and the data of one take, when given). */
+const forgetMove = (slug: string | null | undefined, recordingId?: string) =>
+  forget('moves', 'library', ...(slug ? [`move:${slug}`] : []), ...(recordingId ? [`data:${recordingId}`] : []))
+
+async function slugOfRecording(env: Env, id: string): Promise<string | null> {
+  const row = await env.DB.prepare(`SELECT m.slug FROM recordings r JOIN moves m ON m.id = r.move_id WHERE r.id = ?1`)
+    .bind(id)
+    .first<{ slug: string }>()
+  return row?.slug ?? null
+}
+
 // ---------- handlers ----------
 
 interface MoveRow {
@@ -130,7 +184,7 @@ function moveOut(m: MoveRow & { recording_count?: number }) {
   }
 }
 
-async function listMoves(env: Env) {
+async function movesWithCounts(env: Env) {
   const { results } = await env.DB.prepare(
     `SELECT m.*, COUNT(r.id) AS recording_count
      FROM moves m
@@ -139,7 +193,39 @@ async function listMoves(env: Env) {
      GROUP BY m.id
      ORDER BY recording_count DESC, m.name`,
   ).all<MoveRow & { recording_count: number }>()
-  return json({ moves: results.map(moveOut) }, 200, { 'Cache-Control': 'public, max-age=30' })
+  return results
+}
+
+async function listMoves(env: Env) {
+  const moves = await cachedJson('moves', 30, async () => (await movesWithCounts(env)).map(moveOut))
+  return json({ moves }, 200, { 'Cache-Control': 'public, max-age=30' })
+}
+
+/**
+ * Everything Identify needs in one request: the moves and every take that may
+ * be matched against (approved ones, plus this device's own pending ones).
+ */
+async function getLibrary(env: Env, deviceId: string | null) {
+  const lib = await cachedJson('library', 60, async () => {
+    const moves = (await movesWithCounts(env)).filter((m) => m.recording_count > 0)
+    const { results } = await env.DB.prepare(
+      `SELECT r.* FROM recordings r JOIN moves m ON m.id = r.move_id
+       WHERE r.status != 'rejected' AND m.status IN ('approved', 'proposed')
+       ORDER BY r.created_at DESC LIMIT 2000`,
+    ).all<RecordingRow>()
+    return { moves, recordings: results }
+  })
+  const names = new Map(lib.moves.map((m) => [m.id, m.name]))
+  return json(
+    {
+      moves: lib.moves.map(moveOut),
+      recordings: lib.recordings
+        .filter((r) => names.has(r.move_id) && (r.status === 'approved' || r.device_id === deviceId))
+        .map((r) => ({ ...recordingOut(r, deviceId), moveName: names.get(r.move_id) })),
+    },
+    200,
+    { 'Cache-Control': 'private, max-age=30' },
+  )
 }
 
 interface RecordingRow {
@@ -185,25 +271,37 @@ function recordingOut(r: RecordingRow, deviceId: string | null) {
 }
 
 async function getMove(env: Env, slug: string, deviceId: string | null) {
-  const move = await env.DB.prepare(`SELECT * FROM moves WHERE slug = ?1`).bind(slug).first<MoveRow>()
-  if (!move || move.status === 'merged') throw new HttpError(404, 'Move not found')
-  const { results } = await env.DB.prepare(
-    `SELECT * FROM recordings WHERE move_id = ?1 AND status != 'rejected' ORDER BY created_at DESC LIMIT 200`,
+  const found = await cachedJson<{ move: MoveRow; recordings: RecordingRow[] } | null>(`move:${slug}`, 60, async () => {
+    const move = await env.DB.prepare(`SELECT * FROM moves WHERE slug = ?1`).bind(slug).first<MoveRow>()
+    if (!move || move.status === 'merged') return null
+    const { results } = await env.DB.prepare(
+      `SELECT * FROM recordings WHERE move_id = ?1 AND status != 'rejected' ORDER BY created_at DESC LIMIT 200`,
+    )
+      .bind(move.id)
+      .all<RecordingRow>()
+    return { move, recordings: results }
+  })
+  if (!found) throw new HttpError(404, 'Move not found')
+  return json(
+    { move: moveOut(found.move), recordings: found.recordings.map((r) => recordingOut(r, deviceId)) },
+    200,
+    { 'Cache-Control': 'private, max-age=30' },
   )
-    .bind(move.id)
-    .all<RecordingRow>()
-  return json({ move: moveOut(move), recordings: results.map((r) => recordingOut(r, deviceId)) })
 }
 
 async function getRecordingData(env: Env, id: string) {
-  const row = await env.DB.prepare(
-    `SELECT d.gz FROM recording_data d JOIN recordings r ON r.id = d.recording_id
-     WHERE d.recording_id = ?1 AND r.status != 'rejected'`,
-  )
-    .bind(id)
-    .first<{ gz: ArrayBuffer | number[] }>()
-  if (!row) throw new HttpError(404, 'Recording not found')
-  const bytes = row.gz instanceof ArrayBuffer ? row.gz : new Uint8Array(row.gz).buffer
+  // A take's data never changes, so a day in the edge cache is safe; deleting or
+  // rejecting a take drops it from the cache at once.
+  const bytes = await cachedBytes(`data:${id}`, 86_400, async () => {
+    const row = await env.DB.prepare(
+      `SELECT d.gz FROM recording_data d JOIN recordings r ON r.id = d.recording_id
+       WHERE d.recording_id = ?1 AND r.status != 'rejected'`,
+    )
+      .bind(id)
+      .first<{ gz: ArrayBuffer | number[] }>()
+    if (!row) throw new HttpError(404, 'Recording not found')
+    return row.gz instanceof ArrayBuffer ? row.gz : new Uint8Array(row.gz).buffer
+  })
   // Served as raw gzip bytes; the app decompresses with DecompressionStream.
   return new Response(bytes, {
     headers: { 'Content-Type': 'application/gzip', 'Cache-Control': 'public, max-age=31536000, immutable' },
@@ -374,6 +472,7 @@ async function storeRecording(
     ),
     env.DB.prepare(`INSERT INTO recording_data (recording_id, gz) VALUES (?1, ?2)`).bind(id, gz),
   ])
+  await forgetMove(move.slug)
 
   return { id, deleteKey, status, duplicate: false, move: { id: move.id, name: move.name, slug: move.slug, status: move.status } }
 }
@@ -420,11 +519,13 @@ async function deleteRecording(req: Request, env: Env, id: string) {
   const row = await env.DB.prepare(`SELECT delete_hash FROM recordings WHERE id = ?1`).bind(id).first<{ delete_hash: string }>()
   if (!row) throw new HttpError(404, 'Recording not found')
   if (row.delete_hash !== (await sha256Hex(key))) throw new HttpError(403, 'Wrong delete key')
+  const slug = await slugOfRecording(env, id)
   await env.DB.batch([
     env.DB.prepare(`DELETE FROM recording_data WHERE recording_id = ?1`).bind(id),
     env.DB.prepare(`DELETE FROM votes WHERE recording_id = ?1`).bind(id),
     env.DB.prepare(`DELETE FROM recordings WHERE id = ?1`).bind(id),
   ])
+  await forgetMove(slug, id)
   return json({ deleted: true })
 }
 
@@ -546,22 +647,31 @@ async function adminMove(req: Request, env: Env, id: string) {
     }
   }
   const updated = await env.DB.prepare(`SELECT * FROM moves WHERE id = ?1`).bind(id).first<MoveRow>()
+  await forgetMove(move.slug)
+  if (updated && updated.slug !== move.slug) await forgetMove(updated.slug)
+  if (updated?.merged_into) {
+    const target = await env.DB.prepare(`SELECT slug FROM moves WHERE id = ?1`).bind(updated.merged_into).first<{ slug: string }>()
+    await forgetMove(target?.slug)
+  }
   return json({ move: updated ? moveOut(updated) : null })
 }
 
 async function adminRecording(req: Request, env: Env, id: string) {
+  const slug = await slugOfRecording(env, id)
   if (req.method === 'DELETE') {
     await env.DB.batch([
       env.DB.prepare(`DELETE FROM recording_data WHERE recording_id = ?1`).bind(id),
       env.DB.prepare(`DELETE FROM votes WHERE recording_id = ?1`).bind(id),
       env.DB.prepare(`DELETE FROM recordings WHERE id = ?1`).bind(id),
     ])
+    await forgetMove(slug, id)
     return json({ deleted: true })
   }
   const body = await readJson<{ status?: unknown }>(req, 10_000)
   if (typeof body.status !== 'string' || !RECORDING_STATUSES.has(body.status)) throw new HttpError(400, 'Bad status')
   const r = await env.DB.prepare(`UPDATE recordings SET status = ?1 WHERE id = ?2 RETURNING *`).bind(body.status, id).first<RecordingRow>()
   if (!r) throw new HttpError(404, 'Recording not found')
+  await forgetMove(slug, id)
   return json({ recording: recordingOut(r, null) })
 }
 
@@ -581,6 +691,7 @@ async function route(req: Request, env: Env): Promise<Response> {
 
   if (req.method === 'GET' && path === '/api/health') return json({ ok: true })
   if (req.method === 'GET' && path === '/api/moves') return listMoves(env)
+  if (req.method === 'GET' && path === '/api/library') return getLibrary(env, deviceId)
   if (req.method === 'GET' && (m = path.match(/^\/api\/moves\/([a-z0-9-]{1,60})$/))) return getMove(env, m[1], deviceId)
   if (req.method === 'GET' && (m = path.match(/^\/api\/recordings\/([0-9a-f-]{36})\/data$/))) return getRecordingData(env, m[1])
   if (req.method === 'POST' && path === '/api/recordings') return uploadRecording(req, env)

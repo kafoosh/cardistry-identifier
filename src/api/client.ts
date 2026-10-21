@@ -108,6 +108,12 @@ export const fetchMoves = () => call<{ moves: SharedMove[] }>('/api/moves', { ca
 export const fetchMove = (slug: string) =>
   call<{ move: SharedMove; recordings: SharedRecording[] }>(`/api/moves/${encodeURIComponent(slug)}`, { cache: 'no-cache' })
 
+export type LibraryRecording = SharedRecording & { moveName: string }
+
+/** The moves and every take Identify may match against, in one request. */
+export const fetchLibrary = () =>
+  call<{ moves: SharedMove[]; recordings: LibraryRecording[] }>('/api/library', { cache: 'no-cache' })
+
 const frameCache = new Map<string, Promise<Frame[]>>()
 
 export function fetchRecordingFrames(id: string): Promise<Frame[]> {

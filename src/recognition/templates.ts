@@ -1,4 +1,4 @@
-import { fetchMove, fetchMoves, fetchRecordingFrames } from '../api/client'
+import { fetchLibrary, fetchRecordingFrames } from '../api/client'
 import { sharingEnabled } from '../config'
 import { listRecordings, loadRecording } from '../storage/db'
 import { detectActiveHands, keepHands } from '../recording/activeHands'
@@ -47,15 +47,9 @@ export async function loadLocalTemplates(): Promise<{ templates: Template[]; sha
 /** Templates from the shared library: approved takes plus this browser's own pending ones. */
 export async function loadSharedTemplates(skip: Set<string>): Promise<Template[]> {
   if (!sharingEnabled()) return []
-  const moves = (await fetchMoves()).filter((m) => m.recordingCount > 0)
-  const details = await Promise.all(moves.map((m) => fetchMove(m.slug).catch(() => null)))
-  const recs = details.flatMap((d) =>
-    d
-      ? d.recordings
-          .filter((r) => (r.status === 'approved' || r.mine) && !skip.has(r.id))
-          .map((r) => ({ r, name: d.move.name }))
-      : [],
-  )
+  // One request lists every take worth matching: approved ones and this browser's own pending ones.
+  const { recordings } = await fetchLibrary()
+  const recs = recordings.filter((r) => !skip.has(r.id)).map((r) => ({ r, name: r.moveName }))
   const out: Template[] = []
   // A few downloads at a time keeps phones responsive.
   for (let i = 0; i < recs.length; i += 6) {
