@@ -56,8 +56,9 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
   const trimmed = useMemo(() => sliceFrames(capture.frames, trim.startMs, trim.endMs), [capture.frames, trim])
   const activity = useMemo(() => detectActiveHands(capture.frames), [capture.frames])
   const [kept, setKept] = useState(() => new Set(activity.filter((h) => h.active).map((h) => h.slot)))
-  // Replay shows the whole take (so the cut can be widened again); saving keeps only the trimmed part.
-  const replayFrames = useMemo(() => keepHands(capture.frames, kept), [capture.frames, kept])
+  // Replay shows the whole take (so the cut can be widened again) and every tracked hand, with
+  // left-out hands faded; saving keeps only the trimmed part and the kept hands.
+  const leftOut = useMemo(() => new Set(([0, 1] as const).filter((slot) => !kept.has(slot))), [kept])
   const frames = useMemo(() => keepHands(trimmed, kept), [trimmed, kept])
   const trimBase = capture.frames.find((f) => f.t >= trim.startMs)?.t ?? 0
   const durationMs = frames.length ? frames[frames.length - 1].t : 0
@@ -139,7 +140,8 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
           )}
         </div>
         <ReplayCanvas
-          frames={replayFrames}
+          frames={capture.frames}
+          faded={leftOut}
           range={trim}
           handle={replay}
           width={width}

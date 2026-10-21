@@ -13,6 +13,13 @@ export interface HandActivity {
 
 /** A hand moving less than this share of the busiest hand counts as idle. */
 const RELATIVE_IDLE = 0.3
+/**
+ * Only hands tracked in at least this share of frames set the "busiest" bar. A
+ * hand that flickers in and out (mostly hidden behind the deck) gets jumpy,
+ * inflated speeds from its few frames, and would otherwise make a steadily
+ * tracked hand doing half of a two-hand move look idle.
+ */
+const RELIABLE_PRESENCE = 0.3
 
 const dist = (a: Point3, b: Point3) => Math.hypot(a[0] - b[0], a[1] - b[1])
 
@@ -56,7 +63,8 @@ export function detectActiveHands(frames: Frame[]): HandActivity[] {
       active: present > 0,
     })
   }
-  const busiest = Math.max(...out.map((h) => h.motion))
+  const reliable = out.filter((h) => h.presence >= RELIABLE_PRESENCE)
+  const busiest = Math.max(...(reliable.length ? reliable : out).map((h) => h.motion))
   if (busiest > 0) for (const h of out) h.active = h.active && h.motion >= busiest * RELATIVE_IDLE
   return out
 }

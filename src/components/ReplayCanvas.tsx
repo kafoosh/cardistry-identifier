@@ -15,6 +15,8 @@ interface Props {
   range?: { startMs: number; endMs: number }
   /** Lets the parent pause and jump to a time (used while dragging trim handles). */
   handle?: Ref<ReplayHandle>
+  /** Hand slots that were tracked but are left out of the take: drawn faded. */
+  faded?: Set<number>
 }
 
 export interface ReplayHandle {
@@ -36,7 +38,7 @@ function frameAt(frames: Frame[], time: number): number {
 }
 
 /** Replays a recording's wireframe, looping, with play/pause, scrubbing and slow motion. */
-export function ReplayCanvas({ frames, width, height, mirror, videoUrl, videoStartMs = 0, range, handle }: Props) {
+export function ReplayCanvas({ frames, width, height, mirror, videoUrl, videoStartMs = 0, range, handle, faded }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [playing, setPlaying] = useState(true)
@@ -51,8 +53,13 @@ export function ReplayCanvas({ frames, width, height, mirror, videoUrl, videoSta
   useEffect(() => {
     const ctx = canvasRef.current?.getContext('2d')
     if (!ctx || !frames.length) return
-    drawHands(ctx, frames[frameAt(frames, time)].hands)
-  }, [frames, time])
+    const hands = frames[frameAt(frames, time)].hands
+    if (!faded?.size) drawHands(ctx, hands)
+    else {
+      drawHands(ctx, hands.filter((h) => faded.has(h.slot)), { alpha: 0.3 })
+      drawHands(ctx, hands.filter((h) => !faded.has(h.slot)), { clear: false })
+    }
+  }, [frames, time, faded])
 
   // Advance time: follow the video when there is one, otherwise a clock.
   useEffect(() => {
