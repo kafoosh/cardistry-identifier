@@ -11,9 +11,9 @@ const FINGERTIPS = new Set([4, 8, 12, 16, 20])
  * preview is mirrored for a front camera, the canvas is flipped with CSS
  * together with the video, so stored landmarks are never mirrored.
  */
-export function drawHands(ctx: CanvasRenderingContext2D, hands: TrackedHand[]) {
+export function drawHands(ctx: CanvasRenderingContext2D, hands: TrackedHand[], { clear = true, alpha = 1 } = {}) {
   const { width: w, height: h } = ctx.canvas
-  ctx.clearRect(0, 0, w, h)
+  if (clear) ctx.clearRect(0, 0, w, h)
   const unit = Math.max(w, h) / 640
 
   for (const hand of hands) {
@@ -23,7 +23,7 @@ export function drawHands(ctx: CanvasRenderingContext2D, hands: TrackedHand[]) {
     ctx.strokeStyle = colour
     ctx.lineWidth = 3 * unit
     ctx.lineCap = 'round'
-    ctx.globalAlpha = 0.9
+    ctx.globalAlpha = 0.9 * alpha
     ctx.beginPath()
     for (const { start, end } of HAND_CONNECTIONS) {
       ctx.moveTo(pts[start][0] * w, pts[start][1] * h)
@@ -31,7 +31,7 @@ export function drawHands(ctx: CanvasRenderingContext2D, hands: TrackedHand[]) {
     }
     ctx.stroke()
 
-    ctx.globalAlpha = 1
+    ctx.globalAlpha = alpha
     for (let i = 0; i < pts.length; i++) {
       const r = (FINGERTIPS.has(i) ? 5 : 3.5) * unit
       ctx.beginPath()
@@ -40,6 +40,7 @@ export function drawHands(ctx: CanvasRenderingContext2D, hands: TrackedHand[]) {
       ctx.fill()
     }
   }
+  ctx.globalAlpha = 1
 }
 
 /** Card packets as rotated boxes (slanted when tilted) in the colour of the hand holding them (white when loose). */
