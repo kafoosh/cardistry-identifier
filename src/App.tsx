@@ -9,7 +9,7 @@ import { MovePicker } from './components/MovePicker'
 import { loadRecordSetup, saveRecordSetup, type RecordSetupValue } from './recording/recordSetup'
 import { SaveSheet, type SaveDetails } from './components/SaveSheet'
 import { Hud } from './components/Hud'
-import { IdentifyBoxes, IdentifyStatus } from './components/IdentifyPanel'
+import { IdentifyMoves, IdentifyStatus } from './components/IdentifyPanel'
 import { Admin } from './components/Admin'
 import { SharedLibrary } from './components/SharedLibrary'
 import { Identifier, type IdentifyState } from './recognition/identifier'
@@ -759,7 +759,7 @@ export default function App() {
                 </button>
               ))}
             </div>
-            {mode === 'identify' && <IdentifyBoxes state={identify} mirror={mirror} />}
+            {mode === 'identify' && <IdentifyMoves state={identify} mirror={mirror} />}
             <div className={`shutter-row ${mode === 'identify' ? 'slim' : ''}`}>
               <button
                 className="round"

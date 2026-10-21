@@ -1401,77 +1401,101 @@ button.round {
   box-shadow: 0 0 8px var(--accent);
 }
 
-.hand-boxes {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
+.moves {
   width: 100%;
-}
-
-.hand-box {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-  padding: 8px 10px;
+  padding: 8px 12px 10px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface);
   transition:
-    border-color 0.2s,
-    box-shadow 0.2s;
+    border-color 0.3s,
+    box-shadow 0.3s;
 }
 
-.hand-box.both {
-  border-style: dashed;
-}
-
-.hand-box.confident {
+.moves.live {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent) inset;
 }
 
-.hand-box-label {
+.moves-heading {
+  margin: 0 0 4px;
   font-size: 0.72rem;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-}
-
-.hand-box-move {
-  font-size: 1rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.hand-box.confident .hand-box-move {
+.moves.live .moves-heading {
   color: var(--accent);
 }
 
-.hand-box-bar {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--border);
+/* One move fills the row; two sit side by side. Fixed height, so nothing below moves. */
+.moves-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  height: 2.9rem;
+  animation: moves-in 0.25s ease-out;
+}
+
+.moves-list.split {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.moves-list.split .move-answer + .move-answer {
+  border-left: 1px solid var(--border);
+  padding-left: 12px;
+}
+
+.move-answer {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+
+.move-answer strong {
+  font-size: 1.15rem;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.3s;
 }
 
-.hand-box-bar span {
-  display: block;
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.2s;
+.moves-list.split .move-answer strong {
+  font-size: 1rem;
 }
 
-.hand-box-meta {
+.moves:not(.live) .move-answer strong {
+  color: var(--muted);
+}
+
+.moves.live .move-answer strong {
+  color: var(--accent);
+}
+
+.move-answer span {
   font-size: 0.72rem;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  /* A fixed line, so the boxes keep their height whether or not there's a guess. */
-  line-height: 1.45;
-  height: 1.45em;
+}
+
+@keyframes moves-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .moves-list {
+    animation: none;
+  }
 }
 
 .shutter-row.slim .round {
