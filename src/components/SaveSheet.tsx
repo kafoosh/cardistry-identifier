@@ -78,7 +78,9 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
     })
 
   // Saving shares to the library too, unless switched off; the spam check runs
-  // quietly while the take is reviewed, so Save rarely has to wait for it.
+  // quietly while the take is reviewed, so Save rarely has to wait for it. It
+  // starts a moment after the sheet opens (or on Save) so it doesn't hold up
+  // the start of the replay.
   const [share, setShare] = useState(readShare)
   const sharing = shareable && share
   const [nickname, setNickname] = useState(readNick)
@@ -87,6 +89,11 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
   const [shareError, setShareError] = useState('')
   /** A Save tapped before the spam check finished: whether it was "record another". */
   const [waiting, setWaiting] = useState<boolean | null>(null)
+  const [checking, setChecking] = useState(false)
+  useEffect(() => {
+    const id = setTimeout(() => setChecking(true), 2000)
+    return () => clearTimeout(id)
+  }, [])
 
   const toggleShare = (on: boolean) => {
     setShare(on)
@@ -105,6 +112,7 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
 
   const save = (again: boolean) => {
     if (!canSave) return
+    setChecking(true)
     if (sharing && token === null && !shareError) setWaiting(again)
     else send(again, token)
   }
@@ -212,7 +220,7 @@ export function SaveSheet({ capture, moveName: declared, width, height, mirror, 
             )}
           </div>
         )}
-        {sharing && <Turnstile onToken={setToken} onError={setShareError} quiet />}
+        {sharing && checking && <Turnstile onToken={setToken} onError={setShareError} quiet />}
         {sharing && shareError && <p className="small error">{shareError} Saving keeps it on this phone.</p>}
 
         <div className="sheet-actions">
